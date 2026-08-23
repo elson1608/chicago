@@ -178,6 +178,9 @@ function GameRoom({
   const [disconnected, setDisconnected] = useState(false)
   const hasCreatedRoom = useRef(false)
   const [isLeavingRoom, setIsLeavingRoom] = useState(false)
+  const [chicagoAnimation, setChicagoAnimation] = useState<'idle' | 'rolling' | 'celebrating'>('idle')
+  const [optimisticHeld, setOptimisticHeld] =
+    useState<Record<number, boolean>>({})
 
   const hasIdentifiedConnection = useRef(false)
   const socket = usePartySocket({
@@ -220,14 +223,51 @@ function GameRoom({
 
       switch (message.type) {
         case 'GAME_STATE':
+          setOptimisticHeld((current) => {
+            const serverTurn =
+              message.state.round?.turn
+
+            if (!serverTurn) {
+              return {}
+            }
+
+            const next = { ...current }
+
+            for (
+              const [indexString, expectedHeld]
+              of Object.entries(current)
+            ) {
+              const dieIndex = Number(indexString)
+
+              if (
+                serverTurn.roll.dice[dieIndex]?.held ===
+                expectedHeld
+              ) {
+                delete next[dieIndex]
+              }
+            }
+
+            return next
+          })
           setGameState(message.state)
           setError(null)
           break
 
         case 'CHICAGO':
-          setFireworkBurst(
-            (current) => current + 1,
-          )
+          setChicagoAnimation('rolling')
+
+          window.setTimeout(() => {
+            setChicagoAnimation('celebrating')
+
+            setFireworkBurst(
+              (current) => current + 1,
+            )
+          }, 400)
+
+          window.setTimeout(() => {
+            setChicagoAnimation('idle')
+          }, 1200)
+
           break
 
         case 'ERROR':
@@ -268,6 +308,22 @@ function GameRoom({
     })
   }, [gameState, playerId, send])
 
+  useEffect(() => {
+    if (!isLeavingRoom || !gameState) {
+      return
+    }
+
+    if (gameState.players[playerId]) {
+      return
+    }
+
+    onLeaveRoom()
+  }, [
+    isLeavingRoom,
+    gameState,
+    playerId,
+    onLeaveRoom,
+  ])
 
   function joinRoom() {
     if (!name.trim()) {
@@ -304,6 +360,21 @@ function GameRoom({
   }
 
   function toggleDieHeld(dieIndex: number) {
+    if (!turn) {
+      return
+    }
+
+    const serverHeld =
+      turn.roll.dice[dieIndex].held
+
+    const displayedHeld =
+      optimisticHeld[dieIndex] ?? serverHeld
+
+    setOptimisticHeld((current) => ({
+      ...current,
+      [dieIndex]: !displayedHeld,
+    }))
+
     send({
       type: 'TOGGLE_DIE_HELD',
       dieIndex,
@@ -509,131 +580,162 @@ function GameRoom({
             </ul>
           </section>
 
-          {gameState.phase === 'playing' && round && turn && (
+          {chicagoAnimation !== 'idle' && (
             <section className="panel game-board">
-              <div className="turn-heading">
-                <div>
-                  <h2>
-                    {isMyTurn
-                      ? 'Your turn'
-                      : `${activePlayer?.name ?? 'Player'}'s turn`}
-                  </h2>
-
-                  <p>
-                    Rolls: {turn.rolls} / {round.maxRolls}
-                  </p>
-                </div>
-
-                <div className="score-box">
-                  <span className="label">Score</span>
-                  <strong>
-                    {currentScore === null ? '—' : currentScore}
-                  </strong>
-                </div>
-              </div>
-
               <div className="dice-row">
-                {turn.roll.dice.map((die, dieIndex) => (
+                {[1, 1, 1].map((value, dieIndex) => (
                   <div
                     className="die-wrapper"
-                    key={`${turn.rolls}-${dieIndex}`}
+                    key={`chicago-${dieIndex}`}
                   >
                     <Die
-                      value={die.value}
-                      held={die.held}
-                      rolling={turn.rolls > 0}
-                      converting={
-                        turn.roll.convertedDieIndices.includes(dieIndex)
-                      }
-                      disabled={
-                        !isMyTurn ||
-                        turn.rolls === 0
-                      }
-                      onClick={() =>
-                        toggleDieHeld(dieIndex)
-                      }
+                      value={value}
+                      held={false}
+                      rolling={chicagoAnimation === 'rolling'}
+                      converting={false}
+                      disabled={true}
+                      onClick={() => { }}
                     />
-                    <span
-                      className={`hold-label ${die.held ? 'active' : ''
-                        }`}
-                    >
-                      {turn.rolls === 0
-                        ? ''
-                        : die.held
-                          ? 'Held'
-                          : isMyTurn
-                            ? 'Click to hold'
-                            : ''}
-                    </span>
                   </div>
                 ))}
               </div>
-
-              <div className="game-controls">
-                <button
-                  className="primary-action"
-                  onClick={rollDice}
-                  disabled={
-                    !isMyTurn ||
-                    turn.rolls >= round.maxRolls
-                  }
-                >
-                  Roll Dice
-                </button>
-
-                <button
-                  onClick={endTurn}
-                  disabled={
-                    !isMyTurn ||
-                    turn.rolls === 0
-                  }
-                >
-                  End Turn
-                </button>
-              </div>
-
-              <div className="round-info">
-                <span>
-                  Lowest score:{' '}
-                  <strong>
-                    {round.lowestScore ?? '—'}
-                  </strong>
-                </span>
-
-                <span>
-                  Lowest player:{' '}
-                  <strong>
-                    {round.lowestPlayerId
-                      ? gameState.players[
-                        round.lowestPlayerId
-                      ]?.name ?? '—'
-                      : '—'}
-                  </strong>
-                </span>
-              </div>
             </section>
           )}
 
-          {gameState.phase === 'finished' && (
-            <section className="panel result-panel">
-              <h2>Game over</h2>
+          {chicagoAnimation === 'idle' &&
+            gameState.phase === 'playing' &&
+            round &&
+            turn && (
+              <section className="panel game-board">
+                <div className="turn-heading">
+                  <div>
+                    <h2>
+                      {isMyTurn
+                        ? 'Your turn'
+                        : `${activePlayer?.name ?? 'Player'}'s turn`}
+                    </h2>
 
-              <p>
-                {loser
-                  ? `${loser.name} lost the game.`
-                  : 'The game has finished.'}
-              </p>
+                    <p>
+                      Rolls: {turn.rolls} / {round.maxRolls}
+                    </p>
+                  </div>
 
-              {currentPlayer && isHost && (
-                <button
-                  className="primary-action"
-                  onClick={startGame}
-                >
-                  Play again
-                </button>
-              )}
-            </section>
-          )}
+                  <div className="score-box">
+                    <span className="label">Score</span>
+                    <strong>
+                      {currentScore === null ? '—' : currentScore}
+                    </strong>
+                  </div>
+                </div>
+
+                <div className="dice-row">
+                  {turn.roll.dice.map((die, dieIndex) => (
+                    <div
+                      className="die-wrapper"
+                      key={`${turn.rolls}-${dieIndex}`}
+                    >
+                      <Die
+                        value={die.value}
+                        held={
+                          optimisticHeld[dieIndex] ??
+                          die.held
+                        }
+                        rolling={turn.rolls > 0}
+                        converting={
+                          turn.roll.convertedDieIndices.includes(dieIndex)
+                        }
+                        disabled={
+                          !isMyTurn ||
+                          turn.rolls === 0
+                        }
+                        onClick={() =>
+                          toggleDieHeld(dieIndex)
+                        }
+                      />
+                      <span
+                        className={`hold-label ${(optimisticHeld[dieIndex] ?? die.held)
+                          ? 'active'
+                          : ''
+                          }`}
+                      >
+                        {turn.rolls === 0
+                          ? ''
+                          : (optimisticHeld[dieIndex] ?? die.held)
+                            ? 'Held'
+                            : isMyTurn
+                              ? 'Click to hold'
+                              : ''}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="game-controls">
+                  <button
+                    className="primary-action"
+                    onClick={rollDice}
+                    disabled={
+                      !isMyTurn ||
+                      turn.rolls >= round.maxRolls
+                    }
+                  >
+                    Roll Dice
+                  </button>
+
+                  <button
+                    onClick={endTurn}
+                    disabled={
+                      !isMyTurn ||
+                      turn.rolls === 0
+                    }
+                  >
+                    End Turn
+                  </button>
+                </div>
+
+                <div className="round-info">
+                  <span>
+                    Lowest score:{' '}
+                    <strong>
+                      {round.lowestScore ?? '—'}
+                    </strong>
+                  </span>
+
+                  <span>
+                    Lowest player:{' '}
+                    <strong>
+                      {round.lowestPlayerId
+                        ? gameState.players[
+                          round.lowestPlayerId
+                        ]?.name ?? '—'
+                        : '—'}
+                    </strong>
+                  </span>
+                </div>
+              </section>
+            )}
+
+          {chicagoAnimation === 'idle' &&
+            gameState.phase === 'finished' && (
+              <section className="panel result-panel">
+                <h2>Game over</h2>
+
+                <p>
+                  {loser
+                    ? `${loser.name} lost the game.`
+                    : 'The game has finished.'}
+                </p>
+
+                {currentPlayer && isHost && (
+                  <button
+                    className="primary-action"
+                    onClick={startGame}
+                  >
+                    Play again
+                  </button>
+                )}
+              </section>
+            )}
         </>
       )}
 

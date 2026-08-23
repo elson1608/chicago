@@ -15,6 +15,7 @@ import type {
 import './App.css'
 
 const PLAYER_ID_KEY = 'chicago.playerId'
+const PLAYER_NAME_KEY = 'chicago.playerName'
 
 const DIE_PATTERNS: Record<number, number[]> = {
   1: [5],
@@ -145,6 +146,7 @@ function calculateDisplayedScore(
 
 type GameRoomProps = {
   roomCode: string
+  playerName: string
   isCreatingRoom: boolean
   onLeaveRoom: () => void
 }
@@ -167,11 +169,11 @@ function createRoomCode() {
 
 function GameRoom({
   roomCode,
+  playerName,
   isCreatingRoom,
   onLeaveRoom,
 }: GameRoomProps) {
   const [playerId] = useState(getPlayerId)
-  const [name, setName] = useState('')
   const [gameState, setGameState] = useState<GameState | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [fireworkBurst, setFireworkBurst] = useState(0)
@@ -289,13 +291,21 @@ function GameRoom({
       return
     }
 
+    if (!gameState.roomCreated) {
+      return
+    }
+
     if (hasIdentifiedConnection.current) {
       return
     }
 
-    const existingPlayer = gameState.players[playerId]
+    const existingPlayer =
+      gameState.players[playerId]
 
-    if (!existingPlayer) {
+    if (
+      !existingPlayer &&
+      gameState.phase === 'playing'
+    ) {
       return
     }
 
@@ -304,9 +314,14 @@ function GameRoom({
     send({
       type: 'JOIN_ROOM',
       playerId,
-      name: existingPlayer.name,
+      name: playerName,
     })
-  }, [gameState, playerId, send])
+  }, [
+    gameState,
+    playerId,
+    playerName,
+    send,
+  ])
 
   useEffect(() => {
     if (!isLeavingRoom || !gameState) {
@@ -324,20 +339,6 @@ function GameRoom({
     playerId,
     onLeaveRoom,
   ])
-
-  function joinRoom() {
-    if (!name.trim()) {
-      return
-    }
-
-    hasIdentifiedConnection.current = true
-
-    send({
-      type: 'JOIN_ROOM',
-      playerId,
-      name: name.trim(),
-    })
-  }
 
   function leaveCurrentRoom() {
     setIsLeavingRoom(true)
@@ -427,11 +428,6 @@ function GameRoom({
     !gameState.roomCreated &&
     !isCreatingRoom
 
-  const showJoinForm =
-    !roomNotFound &&
-    !currentPlayer &&
-    (!gameState || gameState.phase !== 'playing')
-
   return (
     <main className="app">
       {fireworkBurst > 0 && (
@@ -470,29 +466,6 @@ function GameRoom({
           <button onClick={onLeaveRoom}>
             Back
           </button>
-        </section>
-      )}
-      {showJoinForm && (
-        <section className="panel join-panel">
-          <h2>Join as a Player</h2>
-
-          <div className="join-controls">
-            <input
-              value={name}
-              onChange={(event) => setName(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === 'Enter') {
-                  joinRoom()
-                }
-              }}
-              placeholder="Your name"
-              maxLength={30}
-            />
-
-            <button onClick={joinRoom}>
-              Join
-            </button>
-          </div>
         </section>
       )}
 
@@ -750,6 +723,13 @@ function GameRoom({
 
 
 function App() {
+  const [playerName, setPlayerName] =
+    useState<string | null>(() =>
+      sessionStorage.getItem(PLAYER_NAME_KEY)
+    )
+
+  const [nameInput, setNameInput] =
+    useState('')
   const [roomCode, setRoomCode] = useState<string | null>(() => {
     const params = new URLSearchParams(window.location.search)
 
@@ -761,6 +741,22 @@ function App() {
 
   const [joinCode, setJoinCode] =
     useState('')
+
+  function continueWithName() {
+    const trimmedName =
+      nameInput.trim()
+
+    if (!trimmedName) {
+      return
+    }
+
+    sessionStorage.setItem(
+      PLAYER_NAME_KEY,
+      trimmedName,
+    )
+
+    setPlayerName(trimmedName)
+  }
 
   function createRoom() {
     const code = createRoomCode()
@@ -806,10 +802,50 @@ function App() {
     )
   }
 
+  if (!playerName) {
+    return (
+      <main className="app">
+        <header className="app-header">
+          <h1>Chicago</h1>
+          <p>Three dice. One loser.</p>
+        </header>
+
+        <section className="panel join-panel">
+          <h2>What's your name?</h2>
+
+          <div className="join-controls">
+            <input
+              value={nameInput}
+              onChange={(event) =>
+                setNameInput(event.target.value)
+              }
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') {
+                  continueWithName()
+                }
+              }}
+              placeholder="Your name"
+              maxLength={30}
+              autoFocus
+            />
+
+            <button
+              className="primary-action"
+              onClick={continueWithName}
+            >
+              Continue
+            </button>
+          </div>
+        </section>
+      </main>
+    )
+  }
+
   if (roomCode) {
     return (
       <GameRoom
         roomCode={roomCode}
+        playerName={playerName}
         isCreatingRoom={isCreatingRoom}
         onLeaveRoom={leaveRoom}
       />

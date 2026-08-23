@@ -7,13 +7,15 @@ import { clientMessageSchema } from '../../shared/schemas'
 
 import {
   createInitialGameState,
+  createRoom,
   disconnectPlayer,
   endGame,
   endTurn,
-  joinGame,
+  joinRoom,
+  leaveRoom,
   rollDice,
   startGame,
-  toggleDieHeld
+  toggleDieHeld,
 } from './engine'
 
 const GAME_STATE_STORAGE_KEY = 'gameState'
@@ -30,7 +32,7 @@ export class GameServer extends Server<Env> {
 
   onConnect(connection: Connection) {
     console.log(
-      `Connection ${connection.id} connected to game ${this.name}`,
+      `Connection ${connection.id} connected to room ${this.name}`,
     )
 
     this.sendState(connection)
@@ -78,8 +80,12 @@ export class GameServer extends Server<Env> {
 
     try {
       switch (result.data.type) {
-        case 'JOIN_GAME':
-          this.handleJoinGame(
+        case 'CREATE_ROOM':
+          this.handleCreateRoom()
+          break
+
+        case 'JOIN_ROOM':
+          this.handleJoinRoom(
             connection,
             result.data.playerId,
             result.data.name,
@@ -88,6 +94,10 @@ export class GameServer extends Server<Env> {
           if (this.gameState.phase === 'playing') {
             await this.checkActivePlayerConnection()
           }
+          break
+
+        case 'LEAVE_ROOM':
+          this.handleLeaveRoom(connection)
           break
 
         case 'START_GAME':
@@ -156,12 +166,16 @@ export class GameServer extends Server<Env> {
     await this.commitState()
   }
 
-  private handleJoinGame(
+  private handleCreateRoom() {
+    createRoom(this.gameState)
+  }
+
+  private handleJoinRoom(
     connection: Connection,
     playerId: string,
     name: string,
   ) {
-    joinGame(
+    joinRoom(
       this.gameState,
       playerId,
       name,
@@ -170,6 +184,18 @@ export class GameServer extends Server<Env> {
     connection.setState({
       playerId,
     })
+  }
+
+  private handleLeaveRoom(
+    connection: Connection,
+  ) {
+    const playerId =
+      this.requirePlayerId(connection)
+
+    leaveRoom(
+      this.gameState,
+      playerId,
+    )
   }
 
   private handleStartGame(connection: Connection) {
@@ -295,6 +321,7 @@ export class GameServer extends Server<Env> {
     if (activePlayer.connected) {
       return
     }
+    activePlayer.lives = 0
     endGame(this.gameState, activePlayerId)
     await this.commitState()
   }
@@ -346,19 +373,34 @@ export class GameServer extends Server<Env> {
     }
 
     switch (error.message) {
+      case 'ROOM_ALREADY_EXISTS':
+        this.sendError(
+          connection,
+          error.message,
+          'The room already exists.',
+        )
+        break
+
+      case 'CANNOT_LEAVE_ROOM_DURING_GAME':
+        this.sendError(
+          connection,
+          error.message,
+          'You cannot leave the room while a game is in progress.',
+        )
+        break
+
+      case 'ROOM_NOT_FOUND':
+        this.sendError(
+          connection,
+          error.message,
+          'The room does not exist.',
+        )
+        break
       case 'GAME_ALREADY_STARTED':
         this.sendError(
           connection,
           error.message,
           'The game has already started.',
-        )
-        break
-
-      case 'GAME_ALREADY_FINISHED':
-        this.sendError(
-          connection,
-          error.message,
-          'The game has already finished.',
         )
         break
 
@@ -390,7 +432,7 @@ export class GameServer extends Server<Env> {
         this.sendError(
           connection,
           error.message,
-          'You need to join the game first.',
+          'You need to join the room first.',
         )
         break
 

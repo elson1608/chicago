@@ -189,11 +189,9 @@ button:disabled {
 }
 
 .half-heart {
-  background: linear-gradient(
-    90deg,
-    #ef4444 50%,
-    var(--chicago-border) 50%
-  );
+  background: linear-gradient(90deg,
+      #ef4444 50%,
+      var(--chicago-border) 50%);
   background-clip: text;
   -webkit-background-clip: text;
   color: transparent;
@@ -308,6 +306,7 @@ button:disabled {
 }
 
 @keyframes shake {
+
   0%,
   100% {
     transform: rotate(0deg);
@@ -386,6 +385,23 @@ button:disabled {
   background: rgba(127, 29, 29, 0.35);
 }
 
+.connection-warning {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 20px;
+  padding: 12px 14px;
+  border: 1px solid var(--chicago-danger);
+  border-radius: 10px;
+  background: rgba(127, 29, 29, 0.35);
+  color: #fecaca;
+}
+
+.room-actions {
+  display: flex;
+  gap: 10px;
+}
+
 .fireworks {
   position: fixed;
   inset: 0;
@@ -404,40 +420,79 @@ button:disabled {
   animation: firework 900ms ease-out forwards;
 }
 
-.fireworks span:nth-child(1)  { --x: 0px; --y: -130px; }
-.fireworks span:nth-child(2)  { --x: 65px; --y: -110px; }
-.fireworks span:nth-child(3)  { --x: 110px; --y: -65px; }
-.fireworks span:nth-child(4)  { --x: 130px; --y: 0px; }
-.fireworks span:nth-child(5)  { --x: 110px; --y: 65px; }
-.fireworks span:nth-child(6)  { --x: 65px; --y: 110px; }
-.fireworks span:nth-child(7)  { --x: 0px; --y: 130px; }
-.fireworks span:nth-child(8)  { --x: -65px; --y: 110px; }
-.fireworks span:nth-child(9)  { --x: -110px; --y: 65px; }
-.fireworks span:nth-child(10) { --x: -130px; --y: 0px; }
-.fireworks span:nth-child(11) { --x: -110px; --y: -65px; }
-.fireworks span:nth-child(12) { --x: -65px; --y: -110px; }
+.fireworks span:nth-child(1) {
+  --x: 0px;
+  --y: -130px;
+}
+
+.fireworks span:nth-child(2) {
+  --x: 65px;
+  --y: -110px;
+}
+
+.fireworks span:nth-child(3) {
+  --x: 110px;
+  --y: -65px;
+}
+
+.fireworks span:nth-child(4) {
+  --x: 130px;
+  --y: 0px;
+}
+
+.fireworks span:nth-child(5) {
+  --x: 110px;
+  --y: 65px;
+}
+
+.fireworks span:nth-child(6) {
+  --x: 65px;
+  --y: 110px;
+}
+
+.fireworks span:nth-child(7) {
+  --x: 0px;
+  --y: 130px;
+}
+
+.fireworks span:nth-child(8) {
+  --x: -65px;
+  --y: 110px;
+}
+
+.fireworks span:nth-child(9) {
+  --x: -110px;
+  --y: 65px;
+}
+
+.fireworks span:nth-child(10) {
+  --x: -130px;
+  --y: 0px;
+}
+
+.fireworks span:nth-child(11) {
+  --x: -110px;
+  --y: -65px;
+}
+
+.fireworks span:nth-child(12) {
+  --x: -65px;
+  --y: -110px;
+}
 
 @keyframes firework {
   from {
     opacity: 1;
     transform:
-      translate(-50%, -50%)
-      scale(0.3);
+      translate(-50%, -50%) scale(0.3);
   }
 
   to {
     opacity: 0;
     transform:
-      translate(
-        calc(-50% + var(--x)),
-        calc(-50% + var(--y))
-      )
-      scale(1);
+      translate(calc(-50% + var(--x)),
+        calc(-50% + var(--y))) scale(1);
   }
-}
-
-@media (max-width: 640px) {
-  /* your existing mobile styles */
 }
 
 @media (max-width: 640px) {
@@ -448,6 +503,10 @@ button:disabled {
 
   .panel {
     padding: 18px;
+  }
+
+  .room-actions {
+    flex-direction: column;
   }
 
   .join-controls,

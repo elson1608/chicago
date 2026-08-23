@@ -6,17 +6,18 @@ export type GamePhase =
 export type Player = {
   id: string
   name: string
-  connected: boolean,
+  connected: boolean
   lives: number
-
+  inGame: boolean
   nextPlayerId: string | null
   previousPlayerId: string | null
 }
 
 export type GameState = {
   gameId: string
-  phase: GamePhase
+  roomCreated: boolean
 
+  phase: GamePhase
   players: Record<string, Player>
 
   hostPlayerId: string | null

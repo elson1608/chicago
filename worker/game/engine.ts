@@ -14,8 +14,9 @@ export function createInitialGameState(
 ): GameState {
     return {
         gameId,
-        phase: 'lobby',
+        roomCreated: false,
 
+        phase: 'lobby',
         players: {},
 
         hostPlayerId: null,
@@ -29,24 +30,36 @@ export function createInitialGameState(
     }
 }
 
-export function joinGame(
+export function createRoom(
+    gameState: GameState,
+) {
+    if (gameState.roomCreated) {
+        throw new Error('ROOM_ALREADY_EXISTS')
+    }
+
+    gameState.roomCreated = true
+}
+
+export function joinRoom(
     gameState: GameState,
     playerId: string,
     name: string,
 ) {
+    if (!gameState.roomCreated) {
+        throw new Error('ROOM_NOT_FOUND')
+    }
+
     const existingPlayer = gameState.players[playerId]
 
+    // An existing player can rejoin 
     if (existingPlayer) {
         reconnectPlayer(gameState, playerId, name)
         return
     }
 
+    // New players can only join when the game hasn't started yet
     if (gameState.phase === 'playing') {
         throw new Error('GAME_ALREADY_STARTED')
-    }
-
-    if (gameState.phase === 'finished') {
-        throw new Error('GAME_ALREADY_FINISHED')
     }
 
     const player: Player = {
@@ -54,6 +67,7 @@ export function joinGame(
         name,
         connected: true,
         lives: STARTING_LIVES,
+        inGame: false,
         nextPlayerId: null,
         previousPlayerId: null,
     }
@@ -63,7 +77,42 @@ export function joinGame(
         gameState.hostPlayerId = player.id
     }
 
-    addPlayerToRing(gameState, player)
+    // Player is added to the room
+    gameState.players[player.id] = player
+}
+
+
+export function leaveRoom(
+    gameState: GameState,
+    playerId: string,
+) {
+    if (gameState.phase === 'playing') {
+        throw new Error('CANNOT_LEAVE_ROOM_DURING_GAME')
+    }
+
+    const player = gameState.players[playerId]
+
+    if (!player) {
+        throw new Error('PLAYER_NOT_FOUND')
+    }
+
+    const wasHost = gameState.hostPlayerId === playerId
+
+    delete gameState.players[playerId]
+
+    // If the loser left we remove this
+    if (gameState.loserId === playerId) {
+        gameState.loserId = null
+    }
+
+    // If the host leaves we replace him with the next connected player in the room 
+    if (wasHost) {
+        const nextHost = Object.values(gameState.players)
+            .find((player) => player.connected)
+
+        gameState.hostPlayerId =
+            nextHost?.id ?? null
+    }
 }
 
 function removePlayerFromRing(
@@ -71,12 +120,12 @@ function removePlayerFromRing(
     player: Player,
 ) {
 
-    // Only one player is in the lobby and disconnects
+    // Only one player is in the ring
     if (player.previousPlayerId === null && player.nextPlayerId === null) {
-        delete gameState.players[player.id]
+        return
     }
     // If only previous or next player exist the ring structure is invalid
-    else if (!player.previousPlayerId || !player.nextPlayerId) {
+    if (!player.previousPlayerId || !player.nextPlayerId) {
         throw new Error('INVALID_PLAYER_RING')
     } else {
         const previousPlayer = gameState.players[player.previousPlayerId]
@@ -85,36 +134,11 @@ function removePlayerFromRing(
         if (!previousPlayer || !nextPlayer) {
             throw new Error('PLAYER_NOT_FOUND')
         }
-
         previousPlayer.nextPlayerId = nextPlayer.id
         nextPlayer.previousPlayerId = previousPlayer.id
 
-        delete gameState.players[player.id]
-    }
-}
-
-function addPlayerToRing(
-    gameState: GameState,
-    player: Player
-) {
-    const players = Object.values(gameState.players)
-
-    // No players yet, player is simply inserted into the player dict
-    if (players.length === 0) {
-        gameState.players[player.id] = player
-    }
-    // If we have at least one player we just get the first and last one
-    else {
-        const previousPlayer = players[players.length - 1]
-        const nextPlayer = players[0]
-
-        previousPlayer.nextPlayerId = player.id
-        player.previousPlayerId = previousPlayer.id
-
-        nextPlayer.previousPlayerId = player.id
-        player.nextPlayerId = nextPlayer.id
-
-        gameState.players[player.id] = player
+        player.previousPlayerId = null
+        player.nextPlayerId = null
     }
 }
 
@@ -132,10 +156,7 @@ function reconnectPlayer(
     player.connected = true
     player.name = name
 
-    if (
-        gameState.phase === 'lobby' &&
-        gameState.hostPlayerId === null
-    ) {
+    if (gameState.hostPlayerId === null) {
         gameState.hostPlayerId = player.id
     }
 }
@@ -152,28 +173,26 @@ export function disconnectPlayer(
 
     player.connected = false
 
-    if (
-        gameState.phase === 'lobby' &&
-        gameState.hostPlayerId === playerId
-    ) {
-        let nextPlayerId = player.nextPlayerId
+    if (gameState.hostPlayerId === playerId) {
+        const nextHost = Object.values(gameState.players)
+            .find((player) => player.connected)
 
-        while (nextPlayerId && nextPlayerId !== player.id) {
-            const nextPlayer = gameState.players[nextPlayerId]
+        gameState.hostPlayerId = nextHost?.id ?? null
+    }
+}
 
-            if (!nextPlayer) {
-                throw new Error('PLAYER_NOT_FOUND')
-            }
+function constructRing(
+    players: Player[],
+) {
+    for (let i = 0; i < players.length; i++) {
+        const player = players[i]
 
-            if (nextPlayer.connected) {
-                gameState.hostPlayerId = nextPlayer.id
-                return
-            }
+        const previousPlayer = players.at(i - 1)!
+        const nextPlayer = players.at((i + 1) % players.length)!
 
-            nextPlayerId = nextPlayer.nextPlayerId
-        }
-
-        gameState.hostPlayerId = null
+        player.inGame = true
+        player.previousPlayerId = previousPlayer.id
+        player.nextPlayerId = nextPlayer.id
     }
 }
 
@@ -185,25 +204,28 @@ export function startGame(
         throw new Error('GAME_ALREADY_STARTED')
     }
 
-    if (gameState.phase === 'finished') {
-        throw new Error('GAME_ALREADY_FINISHED')
-    }
     if (playerId !== gameState.hostPlayerId) {
         throw new Error('NOT_HOST')
     }
 
-    // Remove all disconected players before them game starts
-    for (const player of Object.values(gameState.players)) {
-        if (!player.connected) {
-            removePlayerFromRing(gameState, player)
-        }
-    }
-
-    const players = Object.values(gameState.players)
+    // Connected room members participate in the game
+    const players = Object.values(gameState.players).filter((player) => player.connected)
 
     if (players.length <= 1) {
         throw new Error('NOT_ENOUGH_PLAYERS')
     }
+
+    // Reset player state for the new game
+    for (const player of players) {
+        player.lives = STARTING_LIVES
+    }
+
+    // Reset game state
+    gameState.extraLifePlayerId = null
+    gameState.loserId = null
+
+    // Set up Ring structure
+    constructRing(players)
 
     const startingPlayer = players[Math.floor(Math.random() * players.length)]
 
@@ -222,6 +244,14 @@ export function endGame(
     if (!loser) {
         throw new Error('PLAYER_NOT_FOUND')
     }
+
+    // Reset game-specific player state and ring links
+    for (const player of Object.values(gameState.players)) {
+        player.inGame = false
+        player.previousPlayerId = null
+        player.nextPlayerId = null
+    }
+
 
     gameState.loserId = loserId
     gameState.activePlayerId = null
@@ -522,10 +552,13 @@ function handleChicago(
 
     const nextPlayerId = activePlayer.nextPlayerId
 
+    // After a Chicago a player is removed from the ring and the game
+    activePlayer.inGame = false
     removePlayerFromRing(gameState, activePlayer)
 
-    const remainingPlayers =
-        Object.values(gameState.players)
+
+    const remainingPlayers = Object.values(gameState.players)
+        .filter((player) => player.inGame)
 
     if (remainingPlayers.length === 1) {
         endGame(

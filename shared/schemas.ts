@@ -1,8 +1,20 @@
 import { z } from 'zod'
 
-const joinGameMessageSchema = z
+const createRoomMessageSchema = z
   .object({
-    type: z.literal('JOIN_GAME'),
+    type: z.literal('CREATE_ROOM'),
+  })
+  .strict()
+
+const leaveRoomMessageSchema = z
+  .object({
+    type: z.literal('LEAVE_ROOM'),
+  })
+  .strict()
+
+const joinRoomMessageSchema = z
+  .object({
+    type: z.literal('JOIN_ROOM'),
     playerId: z.string().uuid(),
     name: z.string().trim().min(1).max(30),
   })
@@ -34,9 +46,11 @@ const toggleDieHeldMessageSchema = z
   .strict()
 
 export const clientMessageSchema = z.discriminatedUnion('type', [
-  joinGameMessageSchema,
+  createRoomMessageSchema,
+  joinRoomMessageSchema,
+  leaveRoomMessageSchema,
   startGameMessageSchema,
   endTurnMessageSchema,
   rollDiceMessageSchema,
-  toggleDieHeldMessageSchema
+  toggleDieHeldMessageSchema,
 ])

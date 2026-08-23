@@ -147,23 +147,81 @@ function calculateDisplayedScore(
   return scoring ? score : 0
 }
 
-function App() {
+type GameRoomProps = {
+  roomCode: string
+  isCreatingRoom: boolean
+  onLeaveRoom: () => void
+}
+
+const ROOM_CODE_CHARACTERS =
+  'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
+
+function createRoomCode() {
+  return Array.from(
+    { length: 6 },
+    () =>
+      ROOM_CODE_CHARACTERS[
+        Math.floor(
+          Math.random() *
+          ROOM_CODE_CHARACTERS.length,
+        )
+      ],
+  ).join('')
+}
+
+function GameRoom({
+  roomCode,
+  isCreatingRoom,
+  onLeaveRoom,
+}: GameRoomProps) {
   const [playerId] = useState(getPlayerId)
   const [name, setName] = useState('')
   const [gameState, setGameState] = useState<GameState | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [rolling, setRolling] = useState(false)
   const [convertingDieIndices, setConvertingDieIndices] = useState<number[]>([])
-  const [fireworkBurst, setFireworkBurst] =
-    useState(0)
+  const [fireworkBurst, setFireworkBurst] = useState(0)
+  const [disconnected, setDisconnected] = useState(false)
+  const [disconnectDeadline, setDisconnectDeadline] = useState<number | null>(null)
+  const [disconnectSecondsLeft, setDisconnectSecondsLeft] = useState<number | null>(null)
+  const hasCreatedRoom = useRef(false)
+  const [isLeavingRoom, setIsLeavingRoom] = useState(false)
 
   const hasIdentifiedConnection = useRef(false)
   const socket = usePartySocket({
     party: 'game',
-    room: 'test',
+    room: roomCode,
 
-    onOpen() {
+    onOpen(event) {
       hasIdentifiedConnection.current = false
+
+      setDisconnected(false)
+      setDisconnectDeadline(null)
+
+      const target = event.currentTarget
+
+      if (!target) {
+        return
+      }
+
+      const openedSocket = target as WebSocket
+
+      if (
+        isCreatingRoom &&
+        !hasCreatedRoom.current
+      ) {
+        openedSocket.send(
+          JSON.stringify({
+            type: 'CREATE_ROOM',
+          } satisfies ClientMessage),
+        )
+
+        hasCreatedRoom.current = true
+      }
+    },
+
+    onClose() {
+      setDisconnected(true)
     },
 
     onMessage(event) {
@@ -189,6 +247,52 @@ function App() {
   })
 
   useEffect(() => {
+    if (
+      disconnected &&
+      gameState?.activePlayerId === playerId
+    ) {
+      setDisconnectDeadline(Date.now() + 30_000)
+    } else {
+      setDisconnectDeadline(null)
+    }
+  }, [
+    disconnected,
+    gameState?.activePlayerId,
+    playerId,
+  ])
+
+  useEffect(() => {
+    if (disconnectDeadline === null) {
+      setDisconnectSecondsLeft(null)
+      return
+    }
+
+    const deadline = disconnectDeadline
+
+    function updateCountdown() {
+      const remaining = Math.max(
+        0,
+        Math.ceil(
+          (deadline - Date.now()) / 1000,
+        ),
+      )
+
+      setDisconnectSecondsLeft(remaining)
+    }
+
+    updateCountdown()
+
+    const interval = window.setInterval(
+      updateCountdown,
+      250,
+    )
+
+    return () => {
+      window.clearInterval(interval)
+    }
+  }, [disconnectDeadline])
+
+  useEffect(() => {
     if (!gameState) {
       return
     }
@@ -207,17 +311,34 @@ function App() {
     hasIdentifiedConnection.current = true
 
     send({
-      type: 'JOIN_GAME',
+      type: 'JOIN_ROOM',
       playerId,
       name: existingPlayer.name,
     })
   }, [gameState, playerId])
 
+  useEffect(() => {
+    if (!isLeavingRoom || !gameState) {
+      return
+    }
+
+    if (gameState.players[playerId]) {
+      return
+    }
+
+    onLeaveRoom()
+  }, [
+    isLeavingRoom,
+    gameState,
+    playerId,
+    onLeaveRoom,
+  ])
+
   function send(message: ClientMessage) {
     socket.send(JSON.stringify(message))
   }
 
-  function joinGame() {
+  function joinRoom() {
     if (!name.trim()) {
       return
     }
@@ -225,9 +346,17 @@ function App() {
     hasIdentifiedConnection.current = true
 
     send({
-      type: 'JOIN_GAME',
+      type: 'JOIN_ROOM',
       playerId,
       name: name.trim(),
+    })
+  }
+
+  function leaveCurrentRoom() {
+    setIsLeavingRoom(true)
+
+    send({
+      type: 'LEAVE_ROOM',
     })
   }
 
@@ -315,9 +444,25 @@ function App() {
       )
       : null
 
+  const displayedPlayers =
+    gameState
+      ? Object.values(gameState.players)
+        .filter(
+          (player) =>
+            gameState.phase !== 'playing' ||
+            player.inGame
+        )
+      : []
+
+  const roomNotFound =
+    gameState !== null &&
+    !gameState.roomCreated &&
+    !isCreatingRoom
+
   const showJoinForm =
+    !roomNotFound &&
     !currentPlayer &&
-    (!gameState || gameState.phase === 'lobby')
+    (!gameState || gameState.phase !== 'playing')
 
   return (
     <main className="app">
@@ -335,11 +480,41 @@ function App() {
       <header className="app-header">
         <h1>Chicago</h1>
         <p>Three dice. One loser.</p>
+        <p>
+          Room: <strong>{roomCode}</strong>
+        </p>
       </header>
+      {disconnected && (
+        <div className="connection-warning">
+          <strong>Connection lost.</strong>
 
+          {disconnectSecondsLeft !== null ? (
+            <span>
+              Reconnecting... You may lose the game in{' '}
+              {disconnectSecondsLeft} seconds.
+            </span>
+          ) : (
+            <span>Reconnecting...</span>
+          )}
+        </div>
+      )}
+      {roomNotFound && (
+        <section className="panel join-panel">
+          <h2>Room not found</h2>
+
+          <p>
+            No room with code{' '}
+            <strong>{roomCode}</strong> exists.
+          </p>
+
+          <button onClick={onLeaveRoom}>
+            Back
+          </button>
+        </section>
+      )}
       {showJoinForm && (
         <section className="panel join-panel">
-          <h2>Join game</h2>
+          <h2>Join room</h2>
 
           <div className="join-controls">
             <input
@@ -347,37 +522,51 @@ function App() {
               onChange={(event) => setName(event.target.value)}
               onKeyDown={(event) => {
                 if (event.key === 'Enter') {
-                  joinGame()
+                  joinRoom()
                 }
               }}
               placeholder="Your name"
               maxLength={30}
             />
 
-            <button onClick={joinGame}>
+            <button onClick={joinRoom}>
               Join
             </button>
           </div>
         </section>
       )}
 
-      {gameState && (
+      {!roomNotFound && gameState && (
         <>
           <section className="panel">
             <div className="section-heading">
               <h2>Players</h2>
 
-              {currentPlayer &&
-                isHost &&
-                gameState.phase === 'lobby' && (
-                  <button onClick={startGame}>
-                    Start game
-                  </button>
-                )}
+              <div className="room-actions">
+                {currentPlayer &&
+                  isHost &&
+                  gameState.phase === 'lobby' && (
+                    <button onClick={startGame}>
+                      Start game
+                    </button>
+                  )}
+
+                {currentPlayer &&
+                  gameState.phase !== 'playing' && (
+                    <button
+                      onClick={leaveCurrentRoom}
+                      disabled={isLeavingRoom}
+                    >
+                      {isLeavingRoom
+                        ? 'Leaving...'
+                        : 'Leave room'}
+                    </button>
+                  )}
+              </div>
             </div>
 
             <ul className="player-list">
-              {Object.values(gameState.players).map((player) => (
+              {displayedPlayers.map((player) => (
                 <li
                   key={player.id}
                   className={[
@@ -410,7 +599,7 @@ function App() {
                   </div>
 
                   <span className="lives">
-                    {player.id === gameState.extraLifePlayerId ? (
+                    {player.id === gameState.extraLifePlayerId && player.lives === 1 ? (
                       <span className="heart half-heart">♥</span>
                     ) : (
                       Array.from(
@@ -541,21 +730,138 @@ function App() {
           {gameState.phase === 'finished' && (
             <section className="panel result-panel">
               <h2>Game over</h2>
+
               <p>
                 {loser
                   ? `${loser.name} lost the game.`
                   : 'The game has finished.'}
               </p>
+
+              {currentPlayer && isHost && (
+                <button
+                  className="primary-action"
+                  onClick={startGame}
+                >
+                  Play again
+                </button>
+              )}
             </section>
           )}
         </>
       )}
 
-      {error && (
+      {error && !roomNotFound && (
         <p className="error-message">
           Error: {error}
         </p>
       )}
+    </main>
+  )
+}
+
+
+function App() {
+  const [roomCode, setRoomCode] = useState<string | null>(() => {
+    const params = new URLSearchParams(window.location.search)
+
+    return params.get('room')?.toUpperCase() ?? null
+  })
+
+  const [isCreatingRoom, setIsCreatingRoom] =
+    useState(false)
+
+  const [joinCode, setJoinCode] =
+    useState('')
+
+  function createRoom() {
+    const code = createRoomCode()
+
+    setIsCreatingRoom(true)
+    setRoomCode(code)
+
+    window.history.pushState(
+      null,
+      '',
+      `?room=${code}`,
+    )
+  }
+
+  function leaveRoom() {
+    setRoomCode(null)
+    setIsCreatingRoom(false)
+    setJoinCode('')
+
+    window.history.pushState(
+      null,
+      '',
+      window.location.pathname,
+    )
+  }
+
+  function joinRoomByCode() {
+    const code = joinCode
+      .trim()
+      .toUpperCase()
+
+    if (code.length !== 6) {
+      return
+    }
+
+    setIsCreatingRoom(false)
+    setRoomCode(code)
+
+    window.history.pushState(
+      null,
+      '',
+      `?room=${code}`,
+    )
+  }
+
+  if (roomCode) {
+    return (
+      <GameRoom
+        roomCode={roomCode}
+        isCreatingRoom={isCreatingRoom}
+        onLeaveRoom={leaveRoom}
+      />
+    )
+  }
+
+  return (
+    <main className="app">
+      <header className="app-header">
+        <h1>Chicago</h1>
+        <p>Three dice. One loser.</p>
+      </header>
+
+      <section className="panel join-panel">
+        <button
+          className="primary-action"
+          onClick={createRoom}
+        >
+          Create Room
+        </button>
+
+        <div className="join-controls">
+          <input
+            value={joinCode}
+            onChange={(event) =>
+              setJoinCode(event.target.value)
+            }
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') {
+                joinRoomByCode()
+              }
+            }}
+            placeholder="Enter Room Code"
+            maxLength={6}
+          />
+
+          <button onClick={joinRoomByCode}>
+            Join Room
+          </button>
+        </div>
+      </section>
     </main>
   )
 }

@@ -1,4 +1,5 @@
 import {
+  useCallback,
   useEffect,
   useRef,
   useState,
@@ -55,19 +56,14 @@ function Die({
   converting,
   onClick,
 }: DieProps) {
-  const [displayValue, setDisplayValue] = useState(value)
+  const [displayValue, setDisplayValue] = useState(() => converting ? 6 : value)
+
   const [isConverting, setIsConverting] = useState(false)
 
   useEffect(() => {
     if (!converting) {
-      setDisplayValue(value)
-      setIsConverting(false)
       return
     }
-
-    // The backend already converted this die to 1.
-    // Show the original 6 briefly first.
-    setDisplayValue(6)
 
     const animationDelay = window.setTimeout(() => {
       setIsConverting(true)
@@ -161,10 +157,10 @@ function createRoomCode() {
     { length: 6 },
     () =>
       ROOM_CODE_CHARACTERS[
-        Math.floor(
-          Math.random() *
-          ROOM_CODE_CHARACTERS.length,
-        )
+      Math.floor(
+        Math.random() *
+        ROOM_CODE_CHARACTERS.length,
+      )
       ],
   ).join('')
 }
@@ -179,11 +175,8 @@ function GameRoom({
   const [gameState, setGameState] = useState<GameState | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [rolling, setRolling] = useState(false)
-  const [convertingDieIndices, setConvertingDieIndices] = useState<number[]>([])
   const [fireworkBurst, setFireworkBurst] = useState(0)
   const [disconnected, setDisconnected] = useState(false)
-  const [disconnectDeadline, setDisconnectDeadline] = useState<number | null>(null)
-  const [disconnectSecondsLeft, setDisconnectSecondsLeft] = useState<number | null>(null)
   const hasCreatedRoom = useRef(false)
   const [isLeavingRoom, setIsLeavingRoom] = useState(false)
 
@@ -196,7 +189,6 @@ function GameRoom({
       hasIdentifiedConnection.current = false
 
       setDisconnected(false)
-      setDisconnectDeadline(null)
 
       const target = event.currentTarget
 
@@ -246,51 +238,12 @@ function GameRoom({
     },
   })
 
-  useEffect(() => {
-    if (
-      disconnected &&
-      gameState?.activePlayerId === playerId
-    ) {
-      setDisconnectDeadline(Date.now() + 30_000)
-    } else {
-      setDisconnectDeadline(null)
-    }
-  }, [
-    disconnected,
-    gameState?.activePlayerId,
-    playerId,
-  ])
-
-  useEffect(() => {
-    if (disconnectDeadline === null) {
-      setDisconnectSecondsLeft(null)
-      return
-    }
-
-    const deadline = disconnectDeadline
-
-    function updateCountdown() {
-      const remaining = Math.max(
-        0,
-        Math.ceil(
-          (deadline - Date.now()) / 1000,
-        ),
-      )
-
-      setDisconnectSecondsLeft(remaining)
-    }
-
-    updateCountdown()
-
-    const interval = window.setInterval(
-      updateCountdown,
-      250,
-    )
-
-    return () => {
-      window.clearInterval(interval)
-    }
-  }, [disconnectDeadline])
+  const send = useCallback(
+    (message: ClientMessage) => {
+      socket.send(JSON.stringify(message))
+    },
+    [socket],
+  )
 
   useEffect(() => {
     if (!gameState) {
@@ -301,8 +254,7 @@ function GameRoom({
       return
     }
 
-    const existingPlayer =
-      gameState.players[playerId]
+    const existingPlayer = gameState.players[playerId]
 
     if (!existingPlayer) {
       return
@@ -315,28 +267,8 @@ function GameRoom({
       playerId,
       name: existingPlayer.name,
     })
-  }, [gameState, playerId])
+  }, [gameState, playerId, send])
 
-  useEffect(() => {
-    if (!isLeavingRoom || !gameState) {
-      return
-    }
-
-    if (gameState.players[playerId]) {
-      return
-    }
-
-    onLeaveRoom()
-  }, [
-    isLeavingRoom,
-    gameState,
-    playerId,
-    onLeaveRoom,
-  ])
-
-  function send(message: ClientMessage) {
-    socket.send(JSON.stringify(message))
-  }
 
   function joinRoom() {
     if (!name.trim()) {
@@ -399,34 +331,6 @@ function GameRoom({
   const round = gameState?.round
   const turn = round?.turn
 
-
-  useEffect(() => {
-    if (!turn || turn.rolls === 0) {
-      return
-    }
-
-    // Clear conversion state from the previous roll
-    setConvertingDieIndices([])
-
-    // Nothing was converted on this roll
-    if (turn.roll.convertedDieIndices.length === 0) {
-      return
-    }
-
-    // Start conversion animation for the dice converted on this roll
-    setConvertingDieIndices(
-      turn.roll.convertedDieIndices,
-    )
-
-    const timeout = window.setTimeout(() => {
-      setConvertingDieIndices([])
-    }, 900)
-
-    return () => {
-      window.clearTimeout(timeout)
-    }
-  }, [turn?.rolls])
-
   const activePlayer =
     gameState?.activePlayerId
       ? gameState.players[gameState.activePlayerId]
@@ -487,15 +391,7 @@ function GameRoom({
       {disconnected && (
         <div className="connection-warning">
           <strong>Connection lost.</strong>
-
-          {disconnectSecondsLeft !== null ? (
-            <span>
-              Reconnecting... You may lose the game in{' '}
-              {disconnectSecondsLeft} seconds.
-            </span>
-          ) : (
-            <span>Reconnecting...</span>
-          )}
+          <span>Reconnecting...</span>
         </div>
       )}
       {roomNotFound && (
@@ -647,14 +543,14 @@ function GameRoom({
                 {turn.roll.dice.map((die, dieIndex) => (
                   <div
                     className="die-wrapper"
-                    key={dieIndex}
+                    key={`${turn.rolls}-${dieIndex}`}
                   >
                     <Die
                       value={die.value}
                       held={die.held}
                       rolling={rolling}
                       converting={
-                        convertingDieIndices.includes(dieIndex)
+                        turn.roll.convertedDieIndices.includes(dieIndex)
                       }
                       disabled={
                         !isMyTurn ||

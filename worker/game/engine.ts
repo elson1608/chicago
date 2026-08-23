@@ -245,6 +245,8 @@ export function endGame(
         throw new Error('PLAYER_NOT_FOUND')
     }
 
+    loser.lives = 0
+
     // Reset game-specific player state and ring links
     for (const player of Object.values(gameState.players)) {
         player.inGame = false

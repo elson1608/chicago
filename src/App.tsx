@@ -174,7 +174,6 @@ function GameRoom({
   const [name, setName] = useState('')
   const [gameState, setGameState] = useState<GameState | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const [rolling, setRolling] = useState(false)
   const [fireworkBurst, setFireworkBurst] = useState(0)
   const [disconnected, setDisconnected] = useState(false)
   const hasCreatedRoom = useRef(false)
@@ -299,15 +298,9 @@ function GameRoom({
   }
 
   function rollDice() {
-    setRolling(true)
-
     send({
       type: 'ROLL_DICE',
     })
-
-    window.setTimeout(() => {
-      setRolling(false)
-    }, 400)
   }
 
   function toggleDieHeld(dieIndex: number) {
@@ -410,7 +403,7 @@ function GameRoom({
       )}
       {showJoinForm && (
         <section className="panel join-panel">
-          <h2>Join room</h2>
+          <h2>Join as a Player</h2>
 
           <div className="join-controls">
             <input
@@ -548,7 +541,7 @@ function GameRoom({
                     <Die
                       value={die.value}
                       held={die.held}
-                      rolling={rolling}
+                      rolling={turn.rolls > 0}
                       converting={
                         turn.roll.convertedDieIndices.includes(dieIndex)
                       }
@@ -582,8 +575,7 @@ function GameRoom({
                   onClick={rollDice}
                   disabled={
                     !isMyTurn ||
-                    turn.rolls >= round.maxRolls ||
-                    rolling
+                    turn.rolls >= round.maxRolls
                   }
                 >
                   Roll Dice
@@ -593,8 +585,7 @@ function GameRoom({
                   onClick={endTurn}
                   disabled={
                     !isMyTurn ||
-                    turn.rolls === 0 ||
-                    rolling
+                    turn.rolls === 0
                   }
                 >
                   End Turn

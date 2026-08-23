@@ -77,9 +77,7 @@ function App() {
     })
   }
 
-  const currentPlayer = gameState?.players.find(
-    (player) => player.id === playerId,
-  )
+  const currentPlayer = gameState?.players[playerId]
 
   const isHost = gameState?.hostPlayerId === playerId
   const isMyTurn = gameState?.activePlayerId === playerId
@@ -113,7 +111,6 @@ function App() {
 
           {gameState.phase === 'playing' && (
             <>
-              <p>Turn: {gameState.turnNumber}</p>
               <p>
                 {isMyTurn
                   ? 'It is your turn.'
@@ -125,7 +122,7 @@ function App() {
           <h3>Players</h3>
 
           <ul>
-            {gameState.players.map((player) => (
+            {Object.values(gameState.players).map((player) => (
               <li key={player.id}>
                 {player.name}
                 {player.id === gameState.hostPlayerId

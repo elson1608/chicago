@@ -12,6 +12,13 @@ export type ClientMessage =
   | {
       type: 'END_TURN'
     }
+  | {
+      type: 'ROLL_DICE'
+    }
+  | {
+      type: 'TOGGLE_DIE_HELD',
+      dieIndex: number
+    }
 
 export type ServerMessage =
   | {

@@ -20,8 +20,23 @@ const endTurnMessageSchema = z
   })
   .strict()
 
+const rollDiceMessageSchema = z
+  .object({
+    type: z.literal('ROLL_DICE'),
+  })
+  .strict()
+
+const toggleDieHeldMessageSchema = z
+  .object({
+    type: z.literal('TOGGLE_DIE_HELD'),
+    dieIndex: z.number().int().min(0).max(2),
+  })
+  .strict()
+
 export const clientMessageSchema = z.discriminatedUnion('type', [
   joinGameMessageSchema,
   startGameMessageSchema,
   endTurnMessageSchema,
+  rollDiceMessageSchema,
+  toggleDieHeldMessageSchema
 ])

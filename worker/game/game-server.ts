@@ -5,6 +5,17 @@ import type { GameState } from '../../shared/game-state'
 import type { ServerMessage } from '../../shared/messages'
 import { clientMessageSchema } from '../../shared/schemas'
 
+import {
+  createInitialGameState,
+  disconnectPlayer,
+  endGame,
+  endTurn,
+  joinGame,
+  rollDice,
+  startGame,
+  toggleDieHeld
+} from './engine'
+
 const GAME_STATE_STORAGE_KEY = 'gameState'
 
 export class GameServer extends Server<Env> {
@@ -12,16 +23,9 @@ export class GameServer extends Server<Env> {
 
   async onStart() {
     this.gameState =
-      (await this.ctx.storage.get<GameState>(GAME_STATE_STORAGE_KEY)) ?? {
-        gameId: this.name,
-        phase: 'lobby',
-        players: [],
-        hostPlayerId: null,
-        turnOrder: [],
-        activePlayerId: null,
-        turnNumber: 0,
-        winnerId: null,
-      }
+      (await this.ctx.storage.get<GameState>(
+        GAME_STATE_STORAGE_KEY,
+      )) ?? createInitialGameState(this.name)
   }
 
   onConnect(connection: Connection) {
@@ -32,7 +36,10 @@ export class GameServer extends Server<Env> {
     this.sendState(connection)
   }
 
-  async onMessage(connection: Connection, message: WSMessage) {
+  async onMessage(
+    connection: Connection,
+    message: WSMessage,
+  ) {
     if (typeof message !== 'string') {
       this.sendError(
         connection,
@@ -69,22 +76,45 @@ export class GameServer extends Server<Env> {
       return
     }
 
-    switch (result.data.type) {
-      case 'JOIN_GAME':
-        await this.joinGame(
-          connection,
-          result.data.playerId,
-          result.data.name,
-        )
-        break
+    try {
+      switch (result.data.type) {
+        case 'JOIN_GAME':
+          this.handleJoinGame(
+            connection,
+            result.data.playerId,
+            result.data.name,
+          )
+          // only needed when the active player reconnects
+          if (this.gameState.phase === 'playing') {
+            await this.checkActivePlayerConnection()
+          }
+          break
 
-      case 'START_GAME':
-        await this.startGame(connection)
-        break
+        case 'START_GAME':
+          this.handleStartGame(connection)
+          await this.checkActivePlayerConnection()
+          break
 
-      case 'END_TURN':
-        await this.endTurn(connection)
-        break
+        case 'END_TURN':
+          this.handleEndTurn(connection)
+          await this.checkActivePlayerConnection()
+          break
+
+        case 'ROLL_DICE':
+          this.handleRollDice(connection)
+          break
+
+        case 'TOGGLE_DIE_HELD':
+          this.handleToggleDieHeld(
+            connection,
+            result.data.dieIndex
+          )
+          break
+      }
+
+      await this.commitState()
+    } catch (error) {
+      this.handleGameError(connection, error)
     }
   }
 
@@ -105,178 +135,151 @@ export class GameServer extends Server<Env> {
       return
     }
 
-    const player = this.gameState.players.find(
-      (player) => player.id === playerId,
-    )
 
-    if (!player) {
-      return
-    }
-
-    player.connected = false
-
+    disconnectPlayer(this.gameState, playerId)
+    await this.checkActivePlayerConnection()
     await this.commitState()
   }
 
-  private async joinGame(
+  private handleJoinGame(
     connection: Connection,
     playerId: string,
     name: string,
   ) {
-    const existingPlayer = this.gameState.players.find(
-      (player) => player.id === playerId,
+    joinGame(
+      this.gameState,
+      playerId,
+      name,
     )
-
-    if (!existingPlayer && this.gameState.phase !== 'lobby') {
-      this.sendError(
-        connection,
-        'GAME_ALREADY_STARTED',
-        'This game has already started.',
-      )
-
-      return
-    }
-
-    if (existingPlayer) {
-      existingPlayer.name = name
-      existingPlayer.connected = true
-    } else {
-      this.gameState.players.push({
-        id: playerId,
-        name,
-        connected: true,
-      })
-
-      if (this.gameState.hostPlayerId === null) {
-        this.gameState.hostPlayerId = playerId
-      }
-    }
 
     connection.setState({
       playerId,
     })
-
-    await this.commitState()
   }
 
-  private async startGame(connection: Connection) {
+  private handleStartGame(connection: Connection) {
+    const playerId = this.requirePlayerId(connection)
+
+    startGame(
+      this.gameState,
+      playerId,
+    )
+  }
+
+  private handleEndTurn(connection: Connection) {
+    const playerId = this.requirePlayerId(connection)
+
+    endTurn(
+      this.gameState,
+      playerId,
+    )
+  }
+
+  private handleRollDice(connection: Connection) {
+    const playerId = this.requirePlayerId(connection)
+
+    rollDice(
+      this.gameState,
+      playerId,
+    )
+  }
+
+  private handleToggleDieHeld(connection: Connection, dieIndex: number) {
+    const playerId = this.requirePlayerId(connection)
+
+    toggleDieHeld(
+      this.gameState,
+      playerId,
+      dieIndex
+    )
+  }
+
+  private requirePlayerId(
+    connection: Connection,
+  ): string {
     const playerId = this.getPlayerId(connection)
 
     if (!playerId) {
-      this.sendError(
-        connection,
-        'NOT_JOINED',
-        'You need to join the game first.',
-      )
-
-      return
+      throw new Error('NOT_JOINED')
     }
 
-    if (playerId !== this.gameState.hostPlayerId) {
-      this.sendError(
-        connection,
-        'NOT_HOST',
-        'Only the host can start the game.',
-      )
-
-      return
-    }
-
-    if (this.gameState.phase !== 'lobby') {
-      this.sendError(
-        connection,
-        'GAME_ALREADY_STARTED',
-        'The game has already started.',
-      )
-
-      return
-    }
-
-    const connectedPlayers = this.gameState.players.filter(
-      (player) => player.connected,
-    )
-
-    if (connectedPlayers.length < 2) {
-      this.sendError(
-        connection,
-        'NOT_ENOUGH_PLAYERS',
-        'At least two players are required.',
-      )
-
-      return
-    }
-
-    this.gameState.phase = 'playing'
-    this.gameState.turnOrder = connectedPlayers.map(
-      (player) => player.id,
-    )
-    this.gameState.activePlayerId =
-      this.gameState.turnOrder[0] ?? null
-    this.gameState.turnNumber = 1
-
-    await this.commitState()
+    return playerId
   }
 
-  private async endTurn(connection: Connection) {
-    const playerId = this.getPlayerId(connection)
-
-    if (!playerId) {
-      this.sendError(
-        connection,
-        'NOT_JOINED',
-        'You need to join the game first.',
-      )
-
-      return
-    }
-
-    if (this.gameState.phase !== 'playing') {
-      this.sendError(
-        connection,
-        'GAME_NOT_RUNNING',
-        'The game is not running.',
-      )
-
-      return
-    }
-
-    if (this.gameState.activePlayerId !== playerId) {
-      this.sendError(
-        connection,
-        'NOT_YOUR_TURN',
-        'It is not your turn.',
-      )
-
-      return
-    }
-
-    const currentIndex = this.gameState.turnOrder.indexOf(playerId)
-
-    const nextIndex =
-      (currentIndex + 1) % this.gameState.turnOrder.length
-
-    this.gameState.activePlayerId =
-      this.gameState.turnOrder[nextIndex] ?? null
-
-    this.gameState.turnNumber += 1
-
-    await this.commitState()
-  }
-
-  private getPlayerId(connection: Connection): string | null {
+  private getPlayerId(
+    connection: Connection,
+  ): string | null {
     const state = connection.state
 
-    if (typeof state !== 'object' || state === null) {
-      return null
-    }
-
-    if (!('playerId' in state)) {
+    if (
+      typeof state !== 'object' ||
+      state === null ||
+      !('playerId' in state)
+    ) {
       return null
     }
 
     return typeof state.playerId === 'string'
       ? state.playerId
       : null
+  }
+
+  private async checkActivePlayerConnection(): Promise<void> {
+    if (this.gameState.phase !== 'playing') {
+      return
+    }
+
+    const activePlayerId = this.gameState.activePlayerId
+
+    if (!activePlayerId) {
+      throw new Error('NO_ACTIVE_PLAYER')
+    }
+
+    const activePlayer =
+      this.gameState.players[activePlayerId]
+
+    if (!activePlayer) {
+      throw new Error('PLAYER_NOT_FOUND')
+    }
+
+    const alarm = await this.ctx.storage.getAlarm()
+
+    if (!activePlayer.connected) {
+      if (alarm === null) {
+        await this.ctx.storage.setAlarm(
+          Date.now() + 30_000,
+        )
+      }
+    } else {
+      if (alarm !== null) {
+        await this.ctx.storage.deleteAlarm()
+      }
+    }
+  }
+
+  async onAlarm() {
+    if (this.gameState.phase !== 'playing') {
+      return
+    }
+
+    const activePlayerId = this.gameState.activePlayerId
+
+    if (!activePlayerId) {
+      throw new Error('NO_ACTIVE_PLAYER')
+    }
+
+    const activePlayer =
+      this.gameState.players[activePlayerId]
+
+    if (!activePlayer) {
+      throw new Error('PLAYER_NOT_FOUND')
+    }
+
+    if (activePlayer.connected) {
+      return
+    }
+    endGame(this.gameState, activePlayerId)
+    await this.commitState()
   }
 
   private sendState(connection: Connection) {
@@ -309,6 +312,120 @@ export class GameServer extends Server<Env> {
     }
 
     connection.send(JSON.stringify(response))
+  }
+
+  private handleGameError(
+    connection: Connection,
+    error: unknown,
+  ) {
+    if (!(error instanceof Error)) {
+      this.sendError(
+        connection,
+        'UNKNOWN_ERROR',
+        'An unknown error occurred.',
+      )
+
+      return
+    }
+
+    switch (error.message) {
+      case 'GAME_ALREADY_STARTED':
+        this.sendError(
+          connection,
+          error.message,
+          'The game has already started.',
+        )
+        break
+
+      case 'GAME_ALREADY_FINISHED':
+        this.sendError(
+          connection,
+          error.message,
+          'The game has already finished.',
+        )
+        break
+
+      case 'NOT_HOST':
+        this.sendError(
+          connection,
+          error.message,
+          'Only the host can start the game.',
+        )
+        break
+
+      case 'NOT_ENOUGH_PLAYERS':
+        this.sendError(
+          connection,
+          error.message,
+          'At least two players are required.',
+        )
+        break
+
+      case 'NOT_YOUR_TURN':
+        this.sendError(
+          connection,
+          error.message,
+          'It is not your turn.',
+        )
+        break
+
+      case 'NOT_JOINED':
+        this.sendError(
+          connection,
+          error.message,
+          'You need to join the game first.',
+        )
+        break
+
+      case 'NO_ACTIVE_ROUND':
+        this.sendError(
+          connection,
+          error.message,
+          'There is no active round.',
+        )
+        break
+
+      case 'INVALID_DIE_INDEX':
+        this.sendError(
+          connection,
+          error.message,
+          'The selected die does not exist.',
+        )
+        break
+
+      case 'DIE_NOT_ROLLED':
+        this.sendError(
+          connection,
+          error.message,
+          'You cannot hold a die before it has been rolled.',
+        )
+        break
+
+      case 'MAX_ROLLS_REACHED':
+        this.sendError(
+          connection,
+          error.message,
+          'You have already used the maximum number of rolls.',
+        )
+        break
+
+      case 'NO_ROLL_PERFORMED':
+        this.sendError(
+          connection,
+          error.message,
+          'You must roll at least once before ending your turn.',
+        )
+        break
+
+      default:
+        console.error(error)
+
+        this.sendError(
+          connection,
+          'INTERNAL_ERROR',
+          'An internal game error occurred.',
+        )
+    }
   }
 
   private async commitState() {

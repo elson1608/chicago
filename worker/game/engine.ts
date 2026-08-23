@@ -1,0 +1,508 @@
+import type {
+    GameState,
+    Player,
+    DieState,
+    TurnState,
+    RoundState
+} from '../../shared/game-state'
+
+const STARTING_LIVES = 2
+
+export function createInitialGameState(
+    gameId: string,
+): GameState {
+    return {
+        gameId,
+        phase: 'lobby',
+
+        players: {},
+
+        hostPlayerId: null,
+
+        activePlayerId: null,
+
+        round: null,
+
+        extraLifePlayerId: null,
+        loserId: null,
+    }
+}
+
+export function joinGame(
+    gameState: GameState,
+    playerId: string,
+    name: string,
+) {
+    const existingPlayer = gameState.players[playerId]
+
+    if (existingPlayer) {
+        reconnectPlayer(gameState, playerId, name)
+        return
+    }
+
+    if (gameState.phase === 'playing') {
+        throw new Error('GAME_ALREADY_STARTED')
+    }
+
+    if (gameState.phase === 'finished') {
+        throw new Error('GAME_ALREADY_FINISHED')
+    }
+
+    const player: Player = {
+        id: playerId,
+        name,
+        connected: true,
+        lives: STARTING_LIVES,
+        nextPlayerId: null,
+        previousPlayerId: null,
+    }
+
+    // First player becomes the host
+    if (Object.keys(gameState.players).length === 0) {
+        gameState.hostPlayerId = player.id
+    }
+
+    addPlayerToRing(gameState, player)
+}
+
+function removePlayerFromRing(
+    gameState: GameState,
+    player: Player,
+) {
+
+    // Only one player is in the lobby and disconnects
+    if (player.previousPlayerId === null && player.nextPlayerId === null) {
+        delete gameState.players[player.id]
+    }
+    // If only previous or next player exist the ring structure is invalid
+    else if (!player.previousPlayerId || !player.nextPlayerId) {
+        throw new Error('INVALID_PLAYER_RING')
+    } else {
+        const previousPlayer = gameState.players[player.previousPlayerId]
+        const nextPlayer = gameState.players[player.nextPlayerId]
+
+        if (!previousPlayer || !nextPlayer) {
+            throw new Error('PLAYER_NOT_FOUND')
+        }
+
+        previousPlayer.nextPlayerId = nextPlayer.id
+        nextPlayer.previousPlayerId = previousPlayer.id
+
+        delete gameState.players[player.id]
+    }
+}
+
+function addPlayerToRing(
+    gameState: GameState,
+    player: Player
+) {
+    const players = Object.values(gameState.players)
+
+    // No players yet, player is simply inserted into the player dict
+    if (players.length === 0) {
+        gameState.players[player.id] = player
+    }
+    // If we have at least one player we just get the first and last one
+    else {
+        const previousPlayer = players[players.length - 1]
+        const nextPlayer = players[0]
+
+        previousPlayer.nextPlayerId = player.id
+        player.previousPlayerId = previousPlayer.id
+
+        nextPlayer.previousPlayerId = player.id
+        player.nextPlayerId = nextPlayer.id
+
+        gameState.players[player.id] = player
+    }
+}
+
+function reconnectPlayer(
+    gameState: GameState,
+    playerId: string,
+    name: string,
+) {
+    const player = gameState.players[playerId]
+
+    if (!player) {
+        throw new Error('PLAYER_NOT_FOUND')
+    }
+
+    player.connected = true
+    player.name = name
+
+    if (
+        gameState.phase === 'lobby' &&
+        gameState.hostPlayerId === null
+    ) {
+        gameState.hostPlayerId = player.id
+    }
+}
+
+export function disconnectPlayer(
+    gameState: GameState,
+    playerId: string,
+) {
+    const player = gameState.players[playerId]
+
+    if (!player) {
+        return
+    }
+
+    player.connected = false
+
+    if (
+        gameState.phase === 'lobby' &&
+        gameState.hostPlayerId === playerId
+    ) {
+        let nextPlayerId = player.nextPlayerId
+
+        while (nextPlayerId && nextPlayerId !== player.id) {
+            const nextPlayer = gameState.players[nextPlayerId]
+
+            if (!nextPlayer) {
+                throw new Error('PLAYER_NOT_FOUND')
+            }
+
+            if (nextPlayer.connected) {
+                gameState.hostPlayerId = nextPlayer.id
+                return
+            }
+
+            nextPlayerId = nextPlayer.nextPlayerId
+        }
+
+        gameState.hostPlayerId = null
+    }
+}
+
+export function startGame(
+    gameState: GameState,
+    playerId: string,
+) {
+    if (gameState.phase === 'playing') {
+        throw new Error('GAME_ALREADY_STARTED')
+    }
+
+    if (gameState.phase === 'finished') {
+        throw new Error('GAME_ALREADY_FINISHED')
+    }
+    if (playerId !== gameState.hostPlayerId) {
+        throw new Error('NOT_HOST')
+    }
+
+    // Remove all disconected players before them game starts
+    for (const player of Object.values(gameState.players)) {
+        if (!player.connected) {
+            removePlayerFromRing(gameState, player)
+        }
+    }
+
+    const players = Object.values(gameState.players)
+
+    if (players.length <= 1) {
+        throw new Error('NOT_ENOUGH_PLAYERS')
+    }
+
+    const startingPlayer = players[Math.floor(Math.random() * players.length)]
+
+    gameState.phase = 'playing'
+
+    startRound(gameState, startingPlayer.id)
+}
+
+export function endGame(
+    gameState: GameState,
+    loserId: string,
+) {
+
+    const loser = gameState.players[loserId]
+
+    if (!loser) {
+        throw new Error('PLAYER_NOT_FOUND')
+    }
+
+    gameState.loserId = loserId
+    gameState.activePlayerId = null
+    gameState.round = null
+    gameState.phase = 'finished'
+}
+
+
+function calculateScore(
+    dice: [DieState, DieState, DieState],
+): number {
+    let score = 0
+    let scoring = false
+
+    for (const die of dice) {
+        if (die.value === null) {
+            throw new Error('DICE_NOT_ROLLED')
+        }
+
+        if (die.value === 1) {
+            score += 100
+            scoring = true
+        } else if (die.value === 6) {
+            score += 60
+            scoring = true
+        } else {
+            score += die.value
+        }
+    }
+
+    return scoring ? score : 0
+}
+
+export function toggleDieHeld(
+    gameState: GameState,
+    playerId: string,
+    dieIndex: number,
+) {
+    if (gameState.activePlayerId !== playerId) {
+        throw new Error('NOT_YOUR_TURN')
+    }
+
+    const round = gameState.round
+
+    if (!round) {
+        throw new Error('NO_ACTIVE_ROUND')
+    }
+
+    const die = round.turn.dice[dieIndex]
+
+    if (!die) {
+        throw new Error('INVALID_DIE_INDEX')
+    }
+
+    if (die.value === null) {
+        throw new Error('DIE_NOT_ROLLED')
+    }
+
+    die.held = !die.held
+}
+
+function updateLowestScore(
+    gameState: GameState,
+) {
+    const round = gameState.round
+
+    if (!round) {
+        throw new Error('NO_ACTIVE_ROUND')
+    }
+
+    const playerId = gameState.activePlayerId
+
+    if (!playerId) {
+        throw new Error('NO_ACTIVE_PLAYER')
+    }
+
+    const score = calculateScore(round.turn.dice)
+
+    if (
+        round.lowestScore === null ||
+        score <= round.lowestScore
+    ) {
+        round.lowestScore = score
+        round.lowestPlayerId = playerId
+    }
+}
+
+function isChicago(
+    turn: TurnState,
+): boolean {
+    return turn.dice.every(
+        (die) => die.value === 1,
+    )
+}
+
+function advanceTurn(
+    gameState: GameState,
+    activePlayer: Player,
+) {
+    if (!activePlayer.nextPlayerId) {
+        throw new Error('INVALID_PLAYER_RING')
+    }
+
+    const round = gameState.round
+
+    if (!round) {
+        throw new Error('NO_ACTIVE_ROUND')
+    }
+
+    round.turn = createTurnState()
+
+    gameState.activePlayerId = activePlayer.nextPlayerId
+}
+
+function isRoundFinished(
+    round: RoundState,
+    activePlayer: Player,
+): boolean {
+    return activePlayer.nextPlayerId === round.startingPlayerId
+}
+
+export function rollDice(
+    gameState: GameState,
+    playerId: string,
+) {
+    if (gameState.activePlayerId !== playerId) {
+        throw new Error('NOT_YOUR_TURN')
+    }
+
+    const round = gameState.round
+    if (!round) {
+        throw new Error('NO_ACTIVE_ROUND')
+    }
+
+    const turn = round.turn
+    if (turn.rolls >= round.maxRolls) {
+        throw new Error('MAX_ROLLS_REACHED')
+    }
+
+    for (const die of turn.dice) {
+        if (!die.held) {
+            die.value = Math.floor(Math.random() * 6) + 1
+        }
+    }
+
+
+    // If there is more than one sixes all except one are turned into ones
+    const sixIndices: number[] = []
+
+    for (let i = 0; i < turn.dice.length; i++) {
+        if (turn.dice[i].value === 6) {
+            sixIndices.push(i)
+        }
+    }
+
+    for (let i = 0; i < sixIndices.length - 1; i++) {
+        turn.dice[sixIndices[i]].value = 1
+        // Trigger Dice animation
+    }
+
+    turn.rolls++
+}
+
+function createTurnState(): TurnState {
+    return {
+        dice: [
+            {
+                value: null,
+                held: false
+            },
+            {
+                value: null,
+                held: false
+            },
+            {
+                value: null,
+                held: false
+            }
+        ],
+        rolls: 0
+    }
+}
+
+function startRound(
+    gameState: GameState,
+    startingPlayerId: string,
+) {
+
+    gameState.activePlayerId = startingPlayerId
+    gameState.round = {
+        startingPlayerId,
+        lowestScore: null,
+        lowestPlayerId: null,
+        maxRolls: 3,
+        turn: createTurnState()
+    }
+}
+
+function finishRound(
+    gameState: GameState,
+    round: RoundState
+) {
+    if (!round.lowestPlayerId) {
+        throw new Error('NO_LOSING_PLAYER')
+    }
+
+    const losingPlayer = gameState.players[round.lowestPlayerId]
+
+    if (!losingPlayer) {
+        throw new Error('PLAYER_NOT_FOUND')
+    }
+
+    if (losingPlayer.lives === 1) {
+        if (gameState.extraLifePlayerId !== null) {
+            endGame(gameState, losingPlayer.id)
+        }
+        else {
+            gameState.extraLifePlayerId = losingPlayer.id
+            startRound(gameState, losingPlayer.id)
+        }
+    }
+    else {
+        losingPlayer.lives--
+        startRound(gameState, losingPlayer.id)
+    }
+}
+
+export function endTurn(
+    gameState: GameState,
+    playerId: string,
+) {
+    if (gameState.activePlayerId !== playerId) {
+        throw new Error('NOT_YOUR_TURN')
+    }
+
+    const activePlayer = gameState.players[playerId]
+
+    if (!activePlayer) {
+        throw new Error('PLAYER_NOT_FOUND')
+    }
+
+    const round = gameState.round
+
+    if (!round) {
+        throw new Error('NO_ACTIVE_ROUND')
+    }
+
+
+    const turn = round.turn
+
+    if (round.turn.rolls === 0) {
+        throw new Error('NO_ROLL_PERFORMED')
+    }
+
+    updateLowestScore(gameState)
+
+    // First player of the round determines maximum number of rolls
+    if (activePlayer.id === round.startingPlayerId) {
+        round.maxRolls = round.turn.rolls
+    }
+
+    if (isChicago(turn)) {
+        if (!activePlayer.nextPlayerId) {
+            throw new Error('INVALID_PLAYER_RING')
+        }
+
+        const nextPlayerId = activePlayer.nextPlayerId
+
+        removePlayerFromRing(gameState, activePlayer)
+
+        const remainingPlayers = Object.values(gameState.players)
+
+        if (remainingPlayers.length === 1) {
+            endGame(gameState, remainingPlayers[0].id)
+        } else {
+            startRound(gameState, nextPlayerId)
+        }
+    } else if (isRoundFinished(round, activePlayer)) {
+        finishRound(gameState, round)
+        return
+    } else {
+        advanceTurn(gameState, activePlayer)
+    }
+}
+

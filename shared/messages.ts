@@ -30,3 +30,6 @@ export type ServerMessage =
       code: string
       message: string
     }
+  | {
+      type: 'CHICAGO'
+    }

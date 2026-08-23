@@ -3,7 +3,8 @@ import type {
     Player,
     DieState,
     TurnState,
-    RoundState
+    RoundState,
+    RollState
 } from '../../shared/game-state'
 
 const STARTING_LIVES = 2
@@ -269,13 +270,13 @@ export function toggleDieHeld(
         throw new Error('NO_ACTIVE_ROUND')
     }
 
-    const die = round.turn.dice[dieIndex]
+    const die = round.turn.roll.dice[dieIndex]
 
     if (!die) {
         throw new Error('INVALID_DIE_INDEX')
     }
 
-    if (die.value === null) {
+    if (round.turn.rolls === 0) {
         throw new Error('DIE_NOT_ROLLED')
     }
 
@@ -297,7 +298,7 @@ function updateLowestScore(
         throw new Error('NO_ACTIVE_PLAYER')
     }
 
-    const score = calculateScore(round.turn.dice)
+    const score = calculateScore(round.turn.roll.dice)
 
     if (
         round.lowestScore === null ||
@@ -309,9 +310,9 @@ function updateLowestScore(
 }
 
 function isChicago(
-    turn: TurnState,
+    roll: RollState,
 ): boolean {
-    return turn.dice.every(
+    return roll.dice.every(
         (die) => die.value === 1,
     )
 }
@@ -330,7 +331,7 @@ function advanceTurn(
         throw new Error('NO_ACTIVE_ROUND')
     }
 
-    round.turn = createTurnState()
+    round.turn = createTurnState(round.turn.roll.dice)
 
     gameState.activePlayerId = activePlayer.nextPlayerId
 }
@@ -350,63 +351,124 @@ export function rollDice(
         throw new Error('NOT_YOUR_TURN')
     }
 
+    const activePlayer = gameState.players[playerId]
+
+    if (!activePlayer) {
+        throw new Error('PLAYER_NOT_FOUND')
+    }
+
     const round = gameState.round
+
     if (!round) {
         throw new Error('NO_ACTIVE_ROUND')
     }
 
     const turn = round.turn
+    const roll = turn.roll
+
     if (turn.rolls >= round.maxRolls) {
         throw new Error('MAX_ROLLS_REACHED')
     }
 
-    for (const die of turn.dice) {
+    // Reset information from the previous roll
+    roll.convertedDieIndices = []
+
+    // Roll all dice that are not held
+    for (const die of roll.dice) {
         if (!die.held) {
             die.value = Math.floor(Math.random() * 6) + 1
         }
     }
+    turn.rolls++
 
+    // Chicago immediately ends the player's turn
+    if (isChicago(roll)) {
+        handleChicago(
+            gameState,
+            activePlayer,
+            turn,
+        )
 
-    // If there is more than one sixes all except one are turned into ones
+        return true
+    }
+
+    // Find all dice currently showing a six
     const sixIndices: number[] = []
 
-    for (let i = 0; i < turn.dice.length; i++) {
-        if (turn.dice[i].value === 6) {
+    for (let i = 0; i < roll.dice.length; i++) {
+        if (roll.dice[i].value === 6) {
             sixIndices.push(i)
         }
     }
 
+    // If there is more than one six,
+    // convert all except one into ones
     for (let i = 0; i < sixIndices.length - 1; i++) {
-        turn.dice[sixIndices[i]].value = 1
-        // Trigger Dice animation
+        const dieIndex = sixIndices[i]
+
+        roll.dice[dieIndex].value = 1
+        roll.convertedDieIndices.push(dieIndex)
     }
 
-    turn.rolls++
+    return false
 }
 
-function createTurnState(): TurnState {
-    return {
-        dice: [
-            {
-                value: null,
-                held: false
+function createTurnState(
+    previousDice?: [DieState, DieState, DieState]
+): TurnState {
+    // We want to display what the previous player has rolled first
+    if (previousDice) {
+        return {
+            roll: {
+                dice: [
+                    {
+                        value: previousDice[0].value,
+                        held: false
+                    },
+                    {
+                        value: previousDice[1].value,
+                        held: false
+                    },
+                    {
+                        value: previousDice[2].value,
+                        held: false
+                    },
+                ],
+                convertedDieIndices: []
             },
-            {
-                value: null,
-                held: false
+            rolls: 0,
+        }
+    }
+
+    // If the game has just started the dice show a Chicago
+    else {
+        return {
+            roll: {
+                dice: [
+                    {
+                        value: 1,
+                        held: false
+                    },
+                    {
+                        value: 1,
+                        held: false
+                    },
+                    {
+                        value: 1,
+                        held: false
+                    },
+                ],
+                convertedDieIndices: []
             },
-            {
-                value: null,
-                held: false
-            }
-        ],
-        rolls: 0
+            rolls: 0,
+        }
     }
 }
 
 function startRound(
     gameState: GameState,
     startingPlayerId: string,
+    previousDice?: [DieState, DieState, DieState],
 ) {
 
     gameState.activePlayerId = startingPlayerId
@@ -415,7 +477,7 @@ function startRound(
         lowestScore: null,
         lowestPlayerId: null,
         maxRolls: 3,
-        turn: createTurnState()
+        turn: createTurnState(previousDice),
     }
 }
 
@@ -435,16 +497,47 @@ function finishRound(
 
     if (losingPlayer.lives === 1) {
         if (gameState.extraLifePlayerId !== null) {
+            losingPlayer.lives = 0
             endGame(gameState, losingPlayer.id)
         }
         else {
             gameState.extraLifePlayerId = losingPlayer.id
-            startRound(gameState, losingPlayer.id)
+            startRound(gameState, losingPlayer.id, round.turn.roll.dice)
         }
     }
     else {
         losingPlayer.lives--
-        startRound(gameState, losingPlayer.id)
+        startRound(gameState, losingPlayer.id, round.turn.roll.dice)
+    }
+}
+
+function handleChicago(
+    gameState: GameState,
+    activePlayer: Player,
+    turn: TurnState,
+) {
+    if (!activePlayer.nextPlayerId) {
+        throw new Error('INVALID_PLAYER_RING')
+    }
+
+    const nextPlayerId = activePlayer.nextPlayerId
+
+    removePlayerFromRing(gameState, activePlayer)
+
+    const remainingPlayers =
+        Object.values(gameState.players)
+
+    if (remainingPlayers.length === 1) {
+        endGame(
+            gameState,
+            remainingPlayers[0].id,
+        )
+    } else {
+        startRound(
+            gameState,
+            nextPlayerId,
+            turn.roll.dice,
+        )
     }
 }
 
@@ -468,9 +561,6 @@ export function endTurn(
         throw new Error('NO_ACTIVE_ROUND')
     }
 
-
-    const turn = round.turn
-
     if (round.turn.rolls === 0) {
         throw new Error('NO_ROLL_PERFORMED')
     }
@@ -482,27 +572,11 @@ export function endTurn(
         round.maxRolls = round.turn.rolls
     }
 
-    if (isChicago(turn)) {
-        if (!activePlayer.nextPlayerId) {
-            throw new Error('INVALID_PLAYER_RING')
-        }
-
-        const nextPlayerId = activePlayer.nextPlayerId
-
-        removePlayerFromRing(gameState, activePlayer)
-
-        const remainingPlayers = Object.values(gameState.players)
-
-        if (remainingPlayers.length === 1) {
-            endGame(gameState, remainingPlayers[0].id)
-        } else {
-            startRound(gameState, nextPlayerId)
-        }
-    } else if (isRoundFinished(round, activePlayer)) {
+    if (isRoundFinished(round, activePlayer)) {
         finishRound(gameState, round)
         return
-    } else {
-        advanceTurn(gameState, activePlayer)
     }
+
+    advanceTurn(gameState, activePlayer)
 }
 

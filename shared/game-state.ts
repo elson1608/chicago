@@ -41,7 +41,12 @@ export type DieState = {
   held: boolean
 }
 
-export type TurnState = {
+export type RollState = {
   dice: [DieState, DieState, DieState]
+  convertedDieIndices: number[]
+}
+
+export type TurnState = {
   rolls: number
+  roll: RollState
 }

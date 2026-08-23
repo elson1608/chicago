@@ -100,9 +100,24 @@ export class GameServer extends Server<Env> {
           await this.checkActivePlayerConnection()
           break
 
-        case 'ROLL_DICE':
-          this.handleRollDice(connection)
+        case 'ROLL_DICE': {
+          const rolledChicago =
+            this.handleRollDice(connection)
+
+          if (rolledChicago) {
+            const message: ServerMessage = {
+              type: 'CHICAGO',
+            }
+
+            this.broadcast(
+              JSON.stringify(message),
+            )
+
+            await this.checkActivePlayerConnection()
+          }
+
           break
+        }
 
         case 'TOGGLE_DIE_HELD':
           this.handleToggleDieHeld(
@@ -175,10 +190,12 @@ export class GameServer extends Server<Env> {
     )
   }
 
-  private handleRollDice(connection: Connection) {
+  private handleRollDice(
+    connection: Connection,
+  ): boolean {
     const playerId = this.requirePlayerId(connection)
 
-    rollDice(
+    return rollDice(
       this.gameState,
       playerId,
     )

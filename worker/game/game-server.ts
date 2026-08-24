@@ -147,22 +147,37 @@ export class GameServer extends Server<Env> {
   async onClose(connection: Connection) {
     const playerId = this.getPlayerId(connection)
 
-    if (!playerId) {
+    if (playerId) {
+      const hasAnotherConnection =
+        [...this.getConnections()].some(
+          (otherConnection) =>
+            otherConnection.id !== connection.id &&
+            this.getPlayerId(otherConnection) === playerId,
+        )
+
+      if (!hasAnotherConnection) {
+        disconnectPlayer(
+          this.gameState,
+          playerId,
+        )
+      }
+    }
+
+    const hasAnyConnection =
+      [...this.getConnections()].some(
+        (otherConnection) =>
+          otherConnection.id !== connection.id,
+      )
+
+    if (!hasAnyConnection) {
+      await this.ctx.storage.deleteAll()
+
+      this.gameState =
+        createInitialGameState(this.name)
+
       return
     }
 
-    const hasAnotherConnection = [...this.getConnections()].some(
-      (otherConnection) =>
-        otherConnection.id !== connection.id &&
-        this.getPlayerId(otherConnection) === playerId,
-    )
-
-    if (hasAnotherConnection) {
-      return
-    }
-
-
-    disconnectPlayer(this.gameState, playerId)
     await this.checkActivePlayerConnection()
     await this.commitState()
   }

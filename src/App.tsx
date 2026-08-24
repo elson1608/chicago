@@ -57,28 +57,39 @@ function Die({
   converting,
   onClick,
 }: DieProps) {
-  const [displayValue, setDisplayValue] = useState(() => converting ? 6 : value)
+  const [conversionComplete, setConversionComplete] =
+    useState(false)
 
-  const [isConverting, setIsConverting] = useState(false)
+  const [isConverting, setIsConverting] =
+    useState(false)
 
   useEffect(() => {
     if (!converting) {
       return
     }
 
-    const animationDelay = window.setTimeout(() => {
-      setIsConverting(true)
-    }, 300)
+    const animationDelay =
+      window.setTimeout(() => {
+        setIsConverting(true)
+      }, 300)
 
-    const valueChange = window.setTimeout(() => {
-      setDisplayValue(value)
-    }, 600)
+    const conversionCompleteTimeout =
+      window.setTimeout(() => {
+        setConversionComplete(true)
+      }, 600)
 
     return () => {
       window.clearTimeout(animationDelay)
-      window.clearTimeout(valueChange)
+      window.clearTimeout(
+        conversionCompleteTimeout,
+      )
     }
-  }, [converting, value])
+  }, [converting])
+
+  const displayValue =
+    converting && !conversionComplete
+      ? 6
+      : value
 
   const activeDots = new Set(
     displayValue === null
@@ -183,6 +194,8 @@ function GameRoom({
   const [chicagoAnimation, setChicagoAnimation] = useState<'idle' | 'rolling' | 'celebrating'>('idle')
   const [optimisticHeld, setOptimisticHeld] =
     useState<Record<number, boolean>>({})
+  const [optimisticRollNumber, setOptimisticRollNumber] =
+    useState<number | null>(null)
 
   const hasIdentifiedConnection = useRef(false)
   const socket = usePartySocket({
@@ -251,6 +264,30 @@ function GameRoom({
 
             return next
           })
+
+          setOptimisticRollNumber((current) => {
+            if (current === null) {
+              return null
+            }
+
+            if (
+              message.state.activePlayerId !== playerId
+            ) {
+              return null
+            }
+
+            const serverRolls =
+              message.state.round?.turn.rolls
+
+            if (
+              serverRolls === undefined ||
+              serverRolls >= current
+            ) {
+              return null
+            }
+
+            return current
+          })
           setGameState(message.state)
           setError(null)
           break
@@ -273,6 +310,7 @@ function GameRoom({
           break
 
         case 'ERROR':
+          setOptimisticRollNumber(null)
           setError(message.message)
           break
       }
@@ -355,6 +393,18 @@ function GameRoom({
   }
 
   function rollDice() {
+    if (
+      !turn ||
+      !isMyTurn ||
+      optimisticRollNumber !== null
+    ) {
+      return
+    }
+
+    setOptimisticRollNumber(
+      turn.rolls + 1,
+    )
+
     send({
       type: 'ROLL_DICE',
     })
@@ -395,6 +445,10 @@ function GameRoom({
 
   const round = gameState?.round
   const turn = round?.turn
+  const displayedRollNumber =
+    turn
+      ? optimisticRollNumber ?? turn.rolls
+      : 0
 
   const activePlayer =
     gameState?.activePlayerId
@@ -605,7 +659,7 @@ function GameRoom({
                   {turn.roll.dice.map((die, dieIndex) => (
                     <div
                       className="die-wrapper"
-                      key={`${turn.rolls}-${dieIndex}`}
+                      key={`${displayedRollNumber}-${dieIndex}`}
                     >
                       <Die
                         value={die.value}
@@ -613,9 +667,12 @@ function GameRoom({
                           optimisticHeld[dieIndex] ??
                           die.held
                         }
-                        rolling={turn.rolls > 0}
+                        rolling={displayedRollNumber > 0}
                         converting={
-                          turn.roll.convertedDieIndices.includes(dieIndex)
+                          optimisticRollNumber === null &&
+                          turn.roll.convertedDieIndices.includes(
+                            dieIndex,
+                          )
                         }
                         disabled={
                           !isMyTurn ||
@@ -649,7 +706,8 @@ function GameRoom({
                     onClick={rollDice}
                     disabled={
                       !isMyTurn ||
-                      turn.rolls >= round.maxRolls
+                      turn.rolls >= round.maxRolls ||
+                      optimisticRollNumber !== null
                     }
                   >
                     Roll Dice
@@ -659,7 +717,8 @@ function GameRoom({
                     onClick={endTurn}
                     disabled={
                       !isMyTurn ||
-                      turn.rolls === 0
+                      turn.rolls === 0 ||
+                      optimisticRollNumber !== null
                     }
                   >
                     End Turn

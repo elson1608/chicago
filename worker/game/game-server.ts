@@ -19,6 +19,7 @@ import {
 } from './engine'
 
 const GAME_STATE_STORAGE_KEY = 'gameState'
+const ROOM_EMPTY_GRACE_MS = 30_000
 
 export class GameServer extends Server<Env> {
   private gameState!: GameState
@@ -85,17 +86,32 @@ export class GameServer extends Server<Env> {
           this.handleCreateRoom()
           break
 
-        case 'JOIN_ROOM':
+        case 'JOIN_ROOM': {
+          const roomHadNoConnectedPlayers =
+            !Object.values(this.gameState.players)
+              .some((player) => player.connected)
+
           this.handleJoinRoom(
             connection,
             result.data.playerId,
             result.data.name,
           )
-          // only needed when the active player reconnects
+
+          if (roomHadNoConnectedPlayers) {
+            const alarm =
+              await this.ctx.storage.getAlarm()
+
+            if (alarm !== null) {
+              await this.ctx.storage.deleteAlarm()
+            }
+          }
+
           if (this.gameState.phase === 'playing') {
             await this.checkActivePlayerConnection()
           }
+
           break
+        }
 
         case 'LEAVE_ROOM':
           this.handleLeaveRoom(connection)
@@ -145,7 +161,8 @@ export class GameServer extends Server<Env> {
   }
 
   async onClose(connection: Connection) {
-    const playerId = this.getPlayerId(connection)
+    const playerId =
+      this.getPlayerId(connection)
 
     if (playerId) {
       const hasAnotherConnection =
@@ -170,11 +187,11 @@ export class GameServer extends Server<Env> {
       )
 
     if (!hasAnyConnection) {
-      await this.ctx.storage.deleteAll()
+      await this.ctx.storage.setAlarm(
+        Date.now() + ROOM_EMPTY_GRACE_MS,
+      )
 
-      this.gameState =
-        createInitialGameState(this.name)
-
+      await this.commitState()
       return
     }
 
@@ -317,11 +334,24 @@ export class GameServer extends Server<Env> {
   }
 
   async onAlarm() {
+    const hasAnyConnection =
+      [...this.getConnections()].length > 0
+
+    if (!hasAnyConnection) {
+      await this.ctx.storage.deleteAll()
+
+      this.gameState =
+        createInitialGameState(this.name)
+
+      return
+    }
+
     if (this.gameState.phase !== 'playing') {
       return
     }
 
-    const activePlayerId = this.gameState.activePlayerId
+    const activePlayerId =
+      this.gameState.activePlayerId
 
     if (!activePlayerId) {
       throw new Error('NO_ACTIVE_PLAYER')
@@ -337,8 +367,12 @@ export class GameServer extends Server<Env> {
     if (activePlayer.connected) {
       return
     }
-    activePlayer.lives = 0
-    endGame(this.gameState, activePlayerId)
+
+    endGame(
+      this.gameState,
+      activePlayerId,
+    )
+
     await this.commitState()
   }
 

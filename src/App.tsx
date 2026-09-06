@@ -34,6 +34,14 @@ const DIE_PATTERNS: Record<number, number[]> = {
     6: [1, 3, 4, 6, 7, 9],
 }
 
+function vibrate(
+    pattern: number | number[],
+) {
+    if ('vibrate' in navigator) {
+        navigator.vibrate(pattern)
+    }
+}
+
 type DieProps = {
     value: number | null
     held: boolean
@@ -196,6 +204,10 @@ function GameRoom({
         useState<number | null>(null)
 
     const hasIdentifiedConnection = useRef(false)
+    const previousTurn = useRef<{
+        activePlayerId: string | null
+        rolls: number | null
+    } | null>(null)
     const socket = usePartySocket({
         party: 'game',
         room: roomCode,
@@ -239,7 +251,38 @@ function GameRoom({
             const message = JSON.parse(event.data) as ServerMessage
 
             switch (message.type) {
-                case 'GAME_STATE':
+                case 'GAME_STATE': {
+                    const nextActivePlayerId =
+                        message.state.activePlayerId
+
+                    const nextRolls =
+                        message.state.round?.turn.rolls ?? null
+
+                    const previous =
+                        previousTurn.current
+
+                    const becameMyTurn =
+                        nextActivePlayerId === playerId &&
+                        previous !== null &&
+                        (
+                            previous.activePlayerId !== playerId ||
+                            (
+                                previous.activePlayerId === playerId &&
+                                previous.rolls !== null &&
+                                previous.rolls > 0 &&
+                                nextRolls === 0
+                            )
+                        )
+
+                    if (becameMyTurn) {
+                        vibrate(120)
+                    }
+
+                    previousTurn.current = {
+                        activePlayerId: nextActivePlayerId,
+                        rolls: nextRolls,
+                    }
+
                     setOptimisticHeld((current) => {
                         const serverTurn =
                             message.state.round?.turn
@@ -290,11 +333,21 @@ function GameRoom({
 
                         return current
                     })
+
                     setGameState(message.state)
                     setError(null)
                     break
+                }
 
                 case 'CHICAGO':
+                    vibrate([
+                        120,
+                        60,
+                        120,
+                        60,
+                        250,
+                    ])
+
                     setChicagoAnimation('rolling')
 
                     window.setTimeout(() => {

@@ -4,7 +4,6 @@ export type ClientMessage =
   | { type: 'CREATE_ROOM' }
   | {
     type: 'JOIN_ROOM'
-    playerId: string
     name: string
   }
   | { type: 'LEAVE_ROOM' }

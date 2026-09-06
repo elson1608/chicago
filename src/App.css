@@ -402,6 +402,23 @@ button:disabled {
   gap: 10px;
 }
 
+.app-header-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+}
+
+.account-controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.account-controls span {
+  font-weight: 600;
+}
+
 .fireworks {
   position: fixed;
   inset: 0;

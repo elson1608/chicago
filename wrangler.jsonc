@@ -25,5 +25,10 @@
       "type": "durable-object",
       "storage": "sqlite"
     }
+  },
+
+  "vars": {
+    "SUPABASE_URL": "https://uethiyubonejuxzzfgiz.supabase.co",
+    "SUPABASE_PUBLISHABLE_KEY": "sb_publishable_NSF36HAXMcgg3r122qCXEw_jSQ6dtGy"
   }
 }

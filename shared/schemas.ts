@@ -15,7 +15,6 @@ const leaveRoomMessageSchema = z
 const joinRoomMessageSchema = z
   .object({
     type: z.literal('JOIN_ROOM'),
-    playerId: z.string().uuid(),
     name: z.string().trim().min(1).max(30),
   })
   .strict()

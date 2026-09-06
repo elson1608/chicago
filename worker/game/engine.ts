@@ -142,6 +142,35 @@ function removePlayerFromRing(
     }
 }
 
+function reversePlayerRing(
+    gameState: GameState,
+) {
+    for (
+        const player
+        of Object.values(gameState.players)
+        ) {
+        if (!player.inGame) {
+            continue
+        }
+
+        if (
+            !player.nextPlayerId ||
+            !player.previousPlayerId
+        ) {
+            throw new Error('INVALID_PLAYER_RING')
+        }
+
+        const nextPlayerId =
+            player.nextPlayerId
+
+        player.nextPlayerId =
+            player.previousPlayerId
+
+        player.previousPlayerId =
+            nextPlayerId
+    }
+}
+
 function reconnectPlayer(
     gameState: GameState,
     playerId: string,
@@ -548,19 +577,27 @@ function handleChicago(
     activePlayer: Player,
     turn: TurnState,
 ) {
-    if (!activePlayer.nextPlayerId) {
+    if (
+        !activePlayer.nextPlayerId ||
+        !activePlayer.previousPlayerId
+    ) {
         throw new Error('INVALID_PLAYER_RING')
     }
 
-    const nextPlayerId = activePlayer.nextPlayerId
+    const previousPlayerId =
+        activePlayer.previousPlayerId
 
-    // After a Chicago a player is removed from the ring and the game
+    // After a Chicago the player leaves
+    // the game and the direction reverses
     activePlayer.inGame = false
-    removePlayerFromRing(gameState, activePlayer)
+    removePlayerFromRing(
+        gameState,
+        activePlayer,
+    )
 
-
-    const remainingPlayers = Object.values(gameState.players)
-        .filter((player) => player.inGame)
+    const remainingPlayers =
+        Object.values(gameState.players)
+            .filter((player) => player.inGame)
 
     if (remainingPlayers.length === 1) {
         endGame(
@@ -568,9 +605,11 @@ function handleChicago(
             remainingPlayers[0].id,
         )
     } else {
+        reversePlayerRing(gameState)
+
         startRound(
             gameState,
-            nextPlayerId,
+            previousPlayerId,
             turn.roll.dice,
         )
     }

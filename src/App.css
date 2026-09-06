@@ -174,6 +174,14 @@ button:disabled {
   font-weight: 600;
 }
 
+.player-tag.next {
+  opacity: 0.8;
+}
+
+.next-player:not(.active-player) {
+  border-style: dashed;
+}
+
 .player-tag.warning {
   color: var(--chicago-danger);
 }
@@ -395,6 +403,23 @@ button:disabled {
   border-radius: 10px;
   background: rgba(127, 29, 29, 0.35);
   color: #fecaca;
+}
+
+.room-code {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+}
+
+.room-code span {
+  font-size: 0.8rem;
+  opacity: 0.7;
+}
+
+.room-code strong {
+  font-size: 1.2rem;
+  letter-spacing: 0.12em;
 }
 
 .room-actions {

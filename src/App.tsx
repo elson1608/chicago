@@ -509,6 +509,11 @@ function GameRoom({
             ? gameState.players[gameState.activePlayerId]
             : undefined
 
+    const nextPlayerId =
+        gameState?.phase === 'playing'
+            ? activePlayer?.nextPlayerId ?? null
+            : null
+
     const loser =
         gameState?.loserId
             ? gameState.players[gameState.loserId]
@@ -554,6 +559,11 @@ function GameRoom({
                     <div>
                         <h1>Chicago</h1>
                         <p>Three dice. One loser.</p>
+                    </div>
+
+                    <div className="room-code">
+                        <span>Room</span>
+                        <strong>{roomCode}</strong>
                     </div>
                 </div>
             </header>
@@ -615,6 +625,9 @@ function GameRoom({
                                         player.id === gameState.activePlayerId
                                             ? 'active-player'
                                             : '',
+                                        player.id === nextPlayerId
+                                            ? 'next-player'
+                                            : '',
                                         !player.connected
                                             ? 'disconnected-player'
                                             : '',
@@ -628,7 +641,9 @@ function GameRoom({
                                         {player.id === playerId && (
                                             <span className="player-tag">You</span>
                                         )}
-
+                                        {player.id === nextPlayerId && (
+                                            <span className="player-tag next">Next</span>
+                                        )}
                                         {player.id === gameState.hostPlayerId && (
                                             <span className="player-tag">Host</span>
                                         )}
@@ -1024,6 +1039,7 @@ function App() {
             `?room=${code}`,
         )
     }
+
     useEffect(() => {
         let cancelled = false
 

@@ -5,7 +5,9 @@ import type {
     WSMessage,
 } from 'partyserver'
 import {createSupabaseClient} from '../supabase'
+import {recordGameEvents} from './stats'
 import type {GameState} from '../../shared/game-state'
+import type {GameEvent} from './game-events'
 import type {ServerMessage} from '../../shared/messages'
 import {clientMessageSchema} from '../../shared/schemas'
 
@@ -120,7 +122,7 @@ export class GameServer extends Server<Env> {
         }
 
         try {
-            let rolledChicago = false
+            let gameEvents: GameEvent[] = []
             switch (result.data.type) {
                 case 'CREATE_ROOM':
                     this.handleCreateRoom()
@@ -157,20 +159,23 @@ export class GameServer extends Server<Env> {
                     break
 
                 case 'START_GAME':
-                    this.handleStartGame(connection)
+                    gameEvents = this.handleStartGame(connection)
                     await this.checkActivePlayerConnection()
                     break
 
                 case 'END_TURN':
-                    this.handleEndTurn(connection)
+                    gameEvents = this.handleEndTurn(connection)
                     await this.checkActivePlayerConnection()
                     break
 
                 case 'ROLL_DICE':
-                    rolledChicago =
-                        this.handleRollDice(connection)
+                    gameEvents = this.handleRollDice(connection)
 
-                    if (rolledChicago) {
+                    if (
+                        gameEvents.some(
+                            (event) => event.type === 'CHICAGO'
+                        )
+                    ) {
                         await this.checkActivePlayerConnection()
                     }
                     break
@@ -185,7 +190,11 @@ export class GameServer extends Server<Env> {
 
             await this.commitState()
 
-            if (rolledChicago) {
+            if (
+                gameEvents.some(
+                    (event) => event.type === 'CHICAGO',
+                )
+            ) {
                 const message: ServerMessage = {
                     type: 'CHICAGO',
                 }
@@ -194,6 +203,8 @@ export class GameServer extends Server<Env> {
                     JSON.stringify(message),
                 )
             }
+
+            await this.recordStats(gameEvents)
         } catch (error) {
             this.handleGameError(connection, error)
         }
@@ -268,19 +279,19 @@ export class GameServer extends Server<Env> {
         )
     }
 
-    private handleStartGame(connection: Connection) {
+    private handleStartGame(connection: Connection): GameEvent[] {
         const playerId = this.requirePlayerId(connection)
 
-        startGame(
+        return startGame(
             this.gameState,
             playerId,
         )
     }
 
-    private handleEndTurn(connection: Connection) {
+    private handleEndTurn(connection: Connection,): GameEvent[] {
         const playerId = this.requirePlayerId(connection)
 
-        endTurn(
+        return endTurn(
             this.gameState,
             playerId,
         )
@@ -288,7 +299,7 @@ export class GameServer extends Server<Env> {
 
     private handleRollDice(
         connection: Connection,
-    ): boolean {
+    ): GameEvent[] {
         const playerId = this.requirePlayerId(connection)
 
         return rollDice(
@@ -405,12 +416,32 @@ export class GameServer extends Server<Env> {
             return
         }
 
-        endGame(
-            this.gameState,
-            activePlayerId,
-        )
+        const gameEvents =
+            endGame(
+                this.gameState,
+                activePlayerId,
+            )
 
         await this.commitState()
+        await this.recordStats(gameEvents)
+    }
+
+    private async recordStats(gameEvents: GameEvent[],) {
+        if (gameEvents.length === 0) {
+            return
+        }
+
+        try {
+            await recordGameEvents(
+                this.env,
+                gameEvents,
+            )
+        } catch (error) {
+            console.error(
+                'Failed to record game stats:',
+                error,
+            )
+        }
     }
 
     private sendState(connection: Connection) {

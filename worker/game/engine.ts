@@ -1,11 +1,7 @@
-import type {
-    GameState,
-    Player,
-    DieState,
-    TurnState,
-    RoundState,
-    RollState
-} from '../../shared/game-state'
+import type {DieState, GameState, Player, RollState, RoundState, TurnState} from '../../shared/game-state'
+
+import type {GameEvent} from './game-events'
+
 
 const STARTING_LIVES = 2
 
@@ -228,7 +224,7 @@ function constructRing(
 export function startGame(
     gameState: GameState,
     playerId: string,
-) {
+): GameEvent[] {
     if (gameState.phase === 'playing') {
         throw new Error('GAME_ALREADY_STARTED')
     }
@@ -261,12 +257,21 @@ export function startGame(
     gameState.phase = 'playing'
 
     startRound(gameState, startingPlayer.id)
+
+    return [
+        {
+            type: 'GAME_STARTED',
+            playerIds: players.map(
+                (player) => player.id,
+            ),
+        },
+    ]
 }
 
 export function endGame(
     gameState: GameState,
     loserId: string,
-) {
+): GameEvent[] {
 
     const loser = gameState.players[loserId]
 
@@ -288,6 +293,13 @@ export function endGame(
     gameState.activePlayerId = null
     gameState.round = null
     gameState.phase = 'finished'
+
+    return [
+        {
+            type: 'GAME_LOST',
+            playerId: loserId,
+        },
+    ]
 }
 
 
@@ -346,7 +358,7 @@ export function toggleDieHeld(
 
 function updateLowestScore(
     gameState: GameState,
-) {
+): number {
     const round = gameState.round
 
     if (!round) {
@@ -368,6 +380,8 @@ function updateLowestScore(
         round.lowestScore = score
         round.lowestPlayerId = playerId
     }
+
+    return score
 }
 
 function isChicago(
@@ -407,7 +421,7 @@ function isRoundFinished(
 export function rollDice(
     gameState: GameState,
     playerId: string,
-) {
+): GameEvent[] {
     if (gameState.activePlayerId !== playerId) {
         throw new Error('NOT_YOUR_TURN')
     }
@@ -444,13 +458,11 @@ export function rollDice(
 
     // Chicago immediately ends the player's turn
     if (isChicago(roll)) {
-        handleChicago(
+        return handleChicago(
             gameState,
             activePlayer,
             turn,
         )
-
-        return true
     }
 
     // Find all dice currently showing a six
@@ -471,7 +483,7 @@ export function rollDice(
         roll.convertedDieIndices.push(dieIndex)
     }
 
-    return false
+    return []
 }
 
 function createTurnState(
@@ -539,13 +551,14 @@ function startRound(
         lowestPlayerId: null,
         maxRolls: 3,
         turn: createTurnState(previousDice),
+        scores: {},
     }
 }
 
 function finishRound(
     gameState: GameState,
     round: RoundState
-) {
+): GameEvent[] {
     if (!round.lowestPlayerId) {
         throw new Error('NO_LOSING_PLAYER')
     }
@@ -556,13 +569,34 @@ function finishRound(
         throw new Error('PLAYER_NOT_FOUND')
     }
 
+    const events: GameEvent[] =
+        Object.entries(round.scores)
+            .map(([playerId, score]) => ({
+                type: 'ROUND_COMPLETED' as const,
+                playerId,
+                score,
+            }))
+
+    events.push({
+        type: 'ROUND_LOST',
+        playerId: losingPlayer.id,
+    })
+
     if (losingPlayer.lives === 1) {
         if (gameState.extraLifePlayerId !== null) {
-            losingPlayer.lives = 0
-            endGame(gameState, losingPlayer.id)
+            events.push(
+                ...endGame(
+                    gameState,
+                    losingPlayer.id
+                ),
+            )
         }
         else {
             gameState.extraLifePlayerId = losingPlayer.id
+            events.push({
+                type: 'EXTRA_LIFE_CLAIMED',
+                playerId: losingPlayer.id,
+            })
             startRound(gameState, losingPlayer.id, round.turn.roll.dice)
         }
     }
@@ -570,19 +604,28 @@ function finishRound(
         losingPlayer.lives--
         startRound(gameState, losingPlayer.id, round.turn.roll.dice)
     }
+
+    return events
 }
 
 function handleChicago(
     gameState: GameState,
     activePlayer: Player,
     turn: TurnState,
-) {
+): GameEvent[] {
     if (
         !activePlayer.nextPlayerId ||
         !activePlayer.previousPlayerId
     ) {
         throw new Error('INVALID_PLAYER_RING')
     }
+
+    const events: GameEvent[] = [
+        {
+            type: 'CHICAGO',
+            playerId: activePlayer.id,
+        },
+    ]
 
     const previousPlayerId =
         activePlayer.previousPlayerId
@@ -600,9 +643,14 @@ function handleChicago(
             .filter((player) => player.inGame)
 
     if (remainingPlayers.length === 1) {
-        endGame(
-            gameState,
-            remainingPlayers[0].id,
+        const loserId =
+            remainingPlayers[0].id
+
+        events.push(
+            ...endGame(
+                gameState,
+                loserId,
+            ),
         )
     } else {
         reversePlayerRing(gameState)
@@ -613,17 +661,20 @@ function handleChicago(
             turn.roll.dice,
         )
     }
+
+    return events
 }
 
 export function endTurn(
     gameState: GameState,
     playerId: string,
-) {
+): GameEvent[] {
     if (gameState.activePlayerId !== playerId) {
         throw new Error('NOT_YOUR_TURN')
     }
 
-    const activePlayer = gameState.players[playerId]
+    const activePlayer =
+        gameState.players[playerId]
 
     if (!activePlayer) {
         throw new Error('PLAYER_NOT_FOUND')
@@ -639,18 +690,27 @@ export function endTurn(
         throw new Error('NO_ROLL_PERFORMED')
     }
 
-    updateLowestScore(gameState)
+    round.scores[playerId] = updateLowestScore(gameState)
 
-    // First player of the round determines maximum number of rolls
+    // First player of the round determines
+    // maximum number of rolls
     if (activePlayer.id === round.startingPlayerId) {
-        round.maxRolls = round.turn.rolls
+        round.maxRolls =
+            round.turn.rolls
     }
 
     if (isRoundFinished(round, activePlayer)) {
-        finishRound(gameState, round)
-        return
+        return finishRound(
+            gameState,
+            round,
+        )
     }
 
-    advanceTurn(gameState, activePlayer)
+    advanceTurn(
+        gameState,
+        activePlayer,
+    )
+
+    return []
 }
 

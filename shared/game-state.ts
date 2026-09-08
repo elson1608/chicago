@@ -35,6 +35,7 @@ export type RoundState = {
   lowestPlayerId: string | null
   maxRolls: number
   turn: TurnState
+  scores: Record<string, number>
 }
 
 export type DieState = {

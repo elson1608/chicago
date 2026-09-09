@@ -23,6 +23,7 @@ import type {
     ServerMessage,
 } from '../shared/messages'
 
+import {PlayerStats} from './components/PlayerStats'
 import './App.css'
 
 const DIE_PATTERNS: Record<number, number[]> = {
@@ -32,14 +33,6 @@ const DIE_PATTERNS: Record<number, number[]> = {
     4: [1, 3, 7, 9],
     5: [1, 3, 5, 7, 9],
     6: [1, 3, 4, 6, 7, 9],
-}
-
-function vibrate(
-    pattern: number | number[],
-) {
-    if ('vibrate' in navigator) {
-        navigator.vibrate(pattern)
-    }
 }
 
 type DieProps = {
@@ -202,7 +195,10 @@ function GameRoom({
         useState<Record<number, boolean>>({})
     const [optimisticRollNumber, setOptimisticRollNumber] =
         useState<number | null>(null)
-
+    const [showTurnSignal, setShowTurnSignal] =
+        useState(false)
+    const turnSignalTimeout =
+        useRef<number | null>(null)
     const hasIdentifiedConnection = useRef(false)
     const previousTurn = useRef<{
         activePlayerId: string | null
@@ -275,7 +271,19 @@ function GameRoom({
                         )
 
                     if (becameMyTurn) {
-                        vibrate(120)
+                        setShowTurnSignal(true)
+
+                        if (turnSignalTimeout.current !== null) {
+                            window.clearTimeout(
+                                turnSignalTimeout.current,
+                            )
+                        }
+
+                        turnSignalTimeout.current =
+                            window.setTimeout(() => {
+                                setShowTurnSignal(false)
+                                turnSignalTimeout.current = null
+                            }, 900)
                     }
 
                     previousTurn.current = {
@@ -340,14 +348,6 @@ function GameRoom({
                 }
 
                 case 'CHICAGO':
-                    vibrate([
-                        120,
-                        60,
-                        120,
-                        60,
-                        250,
-                    ])
-
                     setChicagoAnimation('rolling')
 
                     window.setTimeout(() => {
@@ -543,6 +543,11 @@ function GameRoom({
 
     return (
         <main className="app">
+            {showTurnSignal && (
+                <div className="turn-signal">
+                    <strong>Your turn!</strong>
+                </div>
+            )}
             {fireworkBurst > 0 && (
                 <div
                     key={fireworkBurst}
@@ -1322,7 +1327,6 @@ function App() {
                     </div>
                 </div>
             </header>
-
             <section className="panel join-panel">
                 <button
                     className="primary-action"
@@ -1351,6 +1355,10 @@ function App() {
                     </button>
                 </div>
             </section>
+
+            <PlayerStats
+                userId={authSession.user.id}
+            />
         </main>
     )
 }

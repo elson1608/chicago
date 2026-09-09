@@ -61,6 +61,10 @@
   margin-right: auto;
 }
 
+.join-panel > .primary-action {
+  margin-bottom: 12px;
+}
+
 .join-controls {
   display: flex;
   gap: 12px;
@@ -184,6 +188,90 @@ button:disabled {
 
 .player-tag.warning {
   color: var(--chicago-danger);
+}
+
+.turn-signal {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+
+  display: flex;
+  align-items: center;
+  justify-content: center;
+
+  pointer-events: none;
+
+  border: 8px solid var(--chicago-accent);
+
+  background:
+          radial-gradient(
+                  circle,
+                  transparent 45%,
+                  color-mix(
+                          in srgb,
+                          var(--chicago-accent) 18%,
+                          transparent
+                  )
+          );
+
+  animation:
+          turn-signal-flash 180ms ease-out,
+          turn-signal-pulse 900ms ease-out forwards;
+}
+
+.turn-signal strong {
+  padding: 14px 24px;
+  border-radius: 14px;
+
+  background: var(--chicago-panel);
+  color: var(--chicago-accent);
+
+  font-size: 2rem;
+  font-weight: 800;
+
+  box-shadow:
+          0 0 30px
+          color-mix(
+                  in srgb,
+                  var(--chicago-accent) 45%,
+                  transparent
+          );
+}
+
+@keyframes turn-signal-flash {
+  0% {
+    background: rgba(255, 255, 255, 0.95);
+  }
+
+  100% {
+    background:
+            radial-gradient(
+                    circle,
+                    transparent 45%,
+                    color-mix(
+                            in srgb,
+                            var(--chicago-accent) 18%,
+                            transparent
+                    )
+            );
+  }
+}
+
+@keyframes turn-signal-pulse {
+  0% {
+    opacity: 0;
+    transform: scale(0.97);
+  }
+
+  20% {
+    opacity: 1;
+    transform: scale(1);
+  }
+
+  100% {
+    opacity: 0;
+    transform: scale(1);
+  }
 }
 
 .lives {
@@ -537,6 +625,86 @@ button:disabled {
   }
 }
 
+.stats-panel {
+  max-width: 520px;
+  margin-left: auto;
+  margin-right: auto;
+  text-align: center;
+}
+
+.stats-panel h2 {
+  margin-bottom: 28px;
+}
+
+.stats-counts,
+.stats-secondary {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 24px;
+}
+
+.stats-counts > div,
+.stats-secondary > div,
+.stats-average {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+
+.stats-counts strong {
+  font-size: 2rem;
+}
+
+.stats-rings {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 32px;
+  margin: 34px 0;
+}
+
+.stat-ring-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  color: var(--chicago-muted);
+  font-size: 0.9rem;
+}
+
+.stat-ring {
+  width: 120px;
+  height: 120px;
+  padding: 10px;
+  border-radius: 50%;
+}
+
+.stat-ring-inner {
+  display: flex;
+  width: 100%;
+  height: 100%;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: var(--chicago-panel);
+  color: var(--chicago-text);
+  font-size: 1.5rem;
+  font-weight: 700;
+}
+
+.stats-secondary strong {
+  font-size: 1.5rem;
+}
+
+.stats-average {
+  margin-top: 30px;
+}
+
+.stats-average strong {
+  color: var(--chicago-accent);
+  font-size: 2rem;
+}
+
 @media (max-width: 640px) {
   .app {
     width: min(100% - 20px, 900px);
@@ -577,5 +745,19 @@ button:disabled {
   .dot {
     width: 11px;
     height: 11px;
+  }
+
+  .stats-rings {
+    gap: 16px;
+  }
+
+  .stat-ring {
+    width: 105px;
+    height: 105px;
+  }
+
+  .stats-counts,
+  .stats-secondary {
+    gap: 16px;
   }
 }

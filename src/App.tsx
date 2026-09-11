@@ -561,10 +561,13 @@ function GameRoom({
             )}
             <header className="app-header">
                 <div className="app-header-row">
-                    <div>
+                    <a
+                        className="app-logo-link"
+                        href="/"
+                    >
                         <h1>Chicago</h1>
                         <p>Three dice. One loser.</p>
-                    </div>
+                    </a>
 
                     <div className="room-code">
                         <span>Room</span>
@@ -1150,8 +1153,13 @@ function App() {
         return (
             <main className="app">
                 <header className="app-header">
-                    <h1>Chicago</h1>
-                    <p>Three dice. One loser.</p>
+                    <a
+                        className="app-logo-link"
+                        href="/"
+                    >
+                        <h1>Chicago</h1>
+                        <p>Three dice. One loser.</p>
+                    </a>
                 </header>
 
                 <section className="panel join-panel">
@@ -1257,8 +1265,13 @@ function App() {
         return (
             <main className="app">
                 <header className="app-header">
-                    <h1>Chicago</h1>
-                    <p>Three dice. One loser.</p>
+                    <a
+                        className="app-logo-link"
+                        href="/"
+                    >
+                        <h1>Chicago</h1>
+                        <p>Three dice. One loser.</p>
+                    </a>
                 </header>
 
                 <section className="panel join-panel">
@@ -1313,10 +1326,13 @@ function App() {
         <main className="app">
             <header className="app-header">
                 <div className="app-header-row">
-                    <div>
+                    <a
+                        className="app-logo-link"
+                        href="/"
+                    >
                         <h1>Chicago</h1>
                         <p>Three dice. One loser.</p>
-                    </div>
+                    </a>
 
                     <div className="account-controls">
                         <span>{playerName}</span>

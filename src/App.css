@@ -40,6 +40,16 @@
   color: var(--chicago-muted);
 }
 
+.app-logo-link {
+  color: inherit;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.app-logo-link:hover h1 {
+  opacity: 0.85;
+}
+
 .panel {
   margin-bottom: 20px;
   padding: 24px;

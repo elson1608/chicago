@@ -9,6 +9,8 @@ import {supabase} from './supabase'
 import type {Session} from '@supabase/supabase-js'
 import {
     getCurrentSession,
+    completeAuthCallback,
+    resendConfirmationEmail,
     signInWithPassword,
     signOut,
     signUpWithPassword,
@@ -25,6 +27,49 @@ import type {
 
 import {PlayerStats} from './components/PlayerStats'
 import './App.css'
+
+type AuthMode = 'signIn' | 'signUp'
+type FieldErrors = {email?: string; password?: string}
+
+function friendlyAuthError(error: unknown, mode?: AuthMode) {
+    const message = error instanceof Error ? error.message.toLowerCase() : ''
+
+    if (message.includes('invalid login credentials')) {
+        return 'Email or password is incorrect.'
+    }
+    if (message.includes('email not confirmed')) {
+        return 'Confirm your email before signing in.'
+    }
+    if (message.includes('already registered') || message.includes('already been registered')) {
+        return 'An account already exists for this email. Try signing in instead.'
+    }
+    if (message.includes('rate limit') || message.includes('too many requests')) {
+        return 'Too many attempts. Please wait a moment and try again.'
+    }
+    if (message.includes('password')) {
+        return mode === 'signUp'
+            ? 'This password does not meet this project\'s password requirements.'
+            : 'Check your password and try again.'
+    }
+    if (message.includes('network') || message.includes('fetch')) {
+        return 'Could not reach Chicago. Check your connection and try again.'
+    }
+
+    return 'Something went wrong. Please try again.'
+}
+
+function validateAuth(email: string, password: string): FieldErrors {
+    const errors: FieldErrors = {}
+    if (!email) {
+        errors.email = 'Enter your email address.'
+    } else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+        errors.email = 'Enter a valid email address.'
+    }
+    if (!password) {
+        errors.password = 'Password is required.'
+    }
+    return errors
+}
 
 const DIE_PATTERNS: Record<number, number[]> = {
     1: [5],
@@ -1053,17 +1098,35 @@ function App() {
     const [authLoaded, setAuthLoaded] =
         useState(false)
     const [authMode, setAuthMode] =
-        useState<'signIn' | 'signUp'>('signIn')
+        useState<AuthMode>('signIn')
     const [emailInput, setEmailInput] =
         useState('')
     const [passwordInput, setPasswordInput] =
         useState('')
+    const emailInputRef = useRef<HTMLInputElement>(null)
+    const passwordInputRef = useRef<HTMLInputElement>(null)
     const [authSubmitting, setAuthSubmitting] =
         useState(false)
-    const [authMessage, setAuthMessage] =
-        useState<string | null>(null)
     const [authError, setAuthError] =
         useState<string | null>(null)
+    const [fieldErrors, setFieldErrors] =
+        useState<FieldErrors>({})
+    const [showPassword, setShowPassword] = useState(false)
+    const [confirmationEmail, setConfirmationEmail] =
+        useState<string | null>(() => sessionStorage.getItem('chicago.confirmationEmail'))
+    const [isResendingConfirmation, setIsResendingConfirmation] =
+        useState(false)
+    const [resendMessage, setResendMessage] =
+        useState<string | null>(null)
+    const [resendCooldown, setResendCooldown] = useState(0)
+    const [isAuthCallback] = useState(
+        () => new URLSearchParams(window.location.search).get('auth') === 'callback',
+    )
+    const [callbackState, setCallbackState] = useState<
+        'idle' | 'confirming' | 'success' | 'error'
+    >(() => isAuthCallback
+        ? 'confirming'
+        : 'idle')
     const [profileLoaded, setProfileLoaded] =
         useState(false)
     const [profileError, setProfileError] =
@@ -1088,17 +1151,25 @@ function App() {
         const email =
             emailInput.trim()
 
-        if (
-            !email ||
-            !passwordInput ||
-            authSubmitting
-        ) {
+        if (authSubmitting) {
+            return
+        }
+
+        const errors = validateAuth(email, passwordInput)
+        setFieldErrors(errors)
+        if (Object.keys(errors).length > 0) {
+            window.setTimeout(() => {
+                if (errors.email) {
+                    emailInputRef.current?.focus()
+                } else {
+                    passwordInputRef.current?.focus()
+                }
+            }, 0)
             return
         }
 
         setAuthSubmitting(true)
         setAuthError(null)
-        setAuthMessage(null)
 
         try {
             if (authMode === 'signIn') {
@@ -1119,21 +1190,32 @@ function App() {
                 if (session) {
                     setAuthSession(session)
                 } else {
-                    setAuthMessage(
-                        'Check your email to confirm your account.',
-                    )
+                    sessionStorage.setItem('chicago.confirmationEmail', email)
+                    setConfirmationEmail(email)
                 }
             }
         } catch (error: unknown) {
-            if (error instanceof Error) {
-                setAuthError(error.message)
-            } else {
-                setAuthError(
-                    'Authentication failed.',
-                )
-            }
+            setAuthError(friendlyAuthError(error, authMode))
         } finally {
             setAuthSubmitting(false)
+        }
+    }
+
+    async function resendConfirmation() {
+        if (!confirmationEmail || isResendingConfirmation || resendCooldown > 0) {
+            return
+        }
+
+        setIsResendingConfirmation(true)
+        setResendMessage(null)
+        try {
+            await resendConfirmationEmail(confirmationEmail)
+            setResendMessage('Confirmation email sent. Check your inbox.')
+            setResendCooldown(60)
+        } catch (error: unknown) {
+            setResendMessage(friendlyAuthError(error))
+        } finally {
+            setIsResendingConfirmation(false)
         }
     }
 
@@ -1234,6 +1316,18 @@ function App() {
     }
 
     useEffect(() => {
+        if (resendCooldown === 0) {
+            return
+        }
+
+        const timer = window.setTimeout(() => {
+            setResendCooldown((seconds) => Math.max(0, seconds - 1))
+        }, 1000)
+
+        return () => window.clearTimeout(timer)
+    }, [resendCooldown])
+
+    useEffect(() => {
         let cancelled = false
 
         const {
@@ -1247,34 +1341,49 @@ function App() {
             },
         )
 
-        getCurrentSession()
-            .then((session) => {
-                if (!cancelled) {
-                    setAuthSession(session)
-                    setAuthLoaded(true)
-                }
-            })
-            .catch((error: unknown) => {
+        const restoreSession = async () => {
+            try {
+                const session = isAuthCallback
+                    ? await completeAuthCallback()
+                    : await getCurrentSession()
+
                 if (cancelled) {
                     return
                 }
 
-                if (error instanceof Error) {
-                    setAuthError(error.message)
-                } else {
-                    setAuthError(
-                        'Authentication failed.',
-                    )
-                }
-
+                setAuthSession(session)
                 setAuthLoaded(true)
-            })
+
+                if (isAuthCallback) {
+                    if (!session) {
+                        throw new Error('No session was created.')
+                    }
+                    window.history.replaceState(null, '', window.location.pathname)
+                    sessionStorage.removeItem('chicago.confirmationEmail')
+                    setCallbackState('success')
+                    window.setTimeout(() => {
+                        if (!cancelled) setCallbackState('idle')
+                    }, 700)
+                }
+            } catch (error: unknown) {
+                if (cancelled) return
+                if (isAuthCallback) {
+                    setAuthError(friendlyAuthError(error))
+                    setCallbackState('error')
+                } else {
+                    setAuthError(friendlyAuthError(error))
+                }
+                setAuthLoaded(true)
+            }
+        }
+
+        restoreSession()
 
         return () => {
             cancelled = true
             subscription.unsubscribe()
         }
-    }, [])
+    }, [isAuthCallback])
 
     const authenticatedUserId =
         authSession?.user.id
@@ -1316,19 +1425,45 @@ function App() {
         }
     }, [authenticatedUserId])
 
-    if (authError) {
+    if (callbackState === 'confirming' || callbackState === 'success' || callbackState === 'error') {
         return (
-            <main className="app">
-                <p>
-                    Authentication failed: {authError}
-                </p>
+            <main className="app auth-page">
+                <header className="app-header">
+                    <a className="app-logo-link" href="/">
+                        <h1>Chicago</h1>
+                        <p>Three dice. One loser.</p>
+                    </a>
+                </header>
+                <section className="panel auth-card auth-status" aria-live="polite">
+                    <span className="auth-status-mark" aria-hidden="true">
+                        {callbackState === 'error' ? '!' : '✓'}
+                    </span>
+                    <h2>{callbackState === 'error' ? 'Confirmation failed' : callbackState === 'success' ? 'Email confirmed' : 'Confirming account…'}</h2>
+                    <p>{callbackState === 'error'
+                        ? 'This link may have expired or already been used.'
+                        : callbackState === 'success'
+                            ? 'Welcome to Chicago.'
+                            : 'Just a moment.'}</p>
+                    {callbackState === 'error' && (
+                        <>
+                            <p className="form-error">{authError}</p>
+                            <button className="primary-action" onClick={() => {
+                                setCallbackState('idle')
+                                window.history.replaceState(null, '', window.location.pathname)
+                            }}>Return to sign in</button>
+                            {confirmationEmail && <button className="text-button" onClick={resendConfirmation} disabled={isResendingConfirmation || resendCooldown > 0}>
+                                {isResendingConfirmation ? 'Sending…' : resendCooldown > 0 ? `Resend in ${resendCooldown}s` : 'Resend confirmation'}
+                            </button>}
+                        </>
+                    )}
+                </section>
             </main>
         )
     }
 
     if (!authLoaded) {
         return (
-            <main className="app">
+            <main className="app auth-page">
                 <p>Loading...</p>
             </main>
         )
@@ -1347,83 +1482,57 @@ function App() {
                     </a>
                 </header>
 
-                <section className="panel join-panel">
-                    <h2>
-                        {authMode === 'signIn'
-                            ? 'Sign in'
-                            : 'Create account'}
-                    </h2>
-
-                    <div className="join-controls">
-                        <input
-                            type="email"
-                            value={emailInput}
-                            onChange={(event) =>
-                                setEmailInput(
-                                    event.target.value,
-                                )
-                            }
-                            placeholder="Email"
-                            autoComplete="email"
-                            disabled={authSubmitting}
-                        />
-
-                        <input
-                            type="password"
-                            value={passwordInput}
-                            onChange={(event) =>
-                                setPasswordInput(
-                                    event.target.value,
-                                )
-                            }
-                            onKeyDown={(event) => {
-                                if (event.key === 'Enter') {
-                                    submitAuth()
-                                }
-                            }}
-                            placeholder="Password"
-                            autoComplete={
-                                authMode === 'signIn'
-                                    ? 'current-password'
-                                    : 'new-password'
-                            }
-                            disabled={authSubmitting}
-                        />
-
-                        <button
-                            className="primary-action"
-                            onClick={submitAuth}
-                            disabled={authSubmitting}
-                        >
-                            {authSubmitting
-                                ? 'Please wait...'
-                                : authMode === 'signIn'
-                                    ? 'Sign in'
-                                    : 'Create account'}
-                        </button>
-                    </div>
-
-                    {authMessage && (
-                        <p>{authMessage}</p>
+                <section className="panel auth-card">
+                    {confirmationEmail ? (
+                        <div className="auth-status" aria-live="polite">
+                            <span className="auth-status-mark" aria-hidden="true">✓</span>
+                            <h2>Check your inbox</h2>
+                            <p>We sent a confirmation link to:</p>
+                            <strong className="confirmation-email">{confirmationEmail}</strong>
+                            <p>Confirm your email address to finish creating your Chicago account.</p>
+                            <button className="primary-action" onClick={resendConfirmation} disabled={isResendingConfirmation || resendCooldown > 0}>
+                                {isResendingConfirmation ? 'Sending…' : resendCooldown > 0 ? `Resend in ${resendCooldown}s` : 'Resend email'}
+                            </button>
+                            {resendMessage && <p className="auth-feedback" role="status">{resendMessage}</p>}
+                            <button className="text-button" onClick={() => {
+                                setConfirmationEmail(null)
+                                setPasswordInput('')
+                                setResendMessage(null)
+                            }}>Use another email</button>
+                        </div>
+                    ) : (
+                        <>
+                            <div className="auth-tabs" role="tablist" aria-label="Authentication options">
+                                {(['signIn', 'signUp'] as const).map((mode) => (
+                                    <button key={mode} type="button" role="tab" aria-selected={authMode === mode} className={authMode === mode ? 'active' : ''} disabled={authSubmitting} onClick={() => {
+                                        setAuthMode(mode)
+                                        setAuthError(null)
+                                        setFieldErrors({})
+                                    }}>{mode === 'signIn' ? 'Sign in' : 'Create account'}</button>
+                                ))}
+                            </div>
+                            <form className="auth-form" noValidate onSubmit={(event) => { event.preventDefault(); submitAuth() }}>
+                                <div className="auth-field">
+                                    <label htmlFor="auth-email">Email</label>
+                                    <input ref={emailInputRef} id="auth-email" type="email" inputMode="email" value={emailInput} onChange={(event) => { setEmailInput(event.target.value); setFieldErrors((errors) => ({...errors, email: undefined})) }} placeholder="you@example.com" autoComplete="email" disabled={authSubmitting} aria-invalid={Boolean(fieldErrors.email)} aria-describedby={fieldErrors.email ? 'auth-email-error' : undefined} />
+                                    {fieldErrors.email && <p id="auth-email-error" className="field-error">{fieldErrors.email}</p>}
+                                </div>
+                                <div className="auth-field">
+                                    <label htmlFor="auth-password">Password</label>
+                                    <div className="password-input-wrap">
+                                        <input ref={passwordInputRef} id="auth-password" type={showPassword ? 'text' : 'password'} value={passwordInput} onChange={(event) => { setPasswordInput(event.target.value); setFieldErrors((errors) => ({...errors, password: undefined})) }} placeholder="••••••••" autoComplete={authMode === 'signIn' ? 'current-password' : 'new-password'} disabled={authSubmitting} aria-invalid={Boolean(fieldErrors.password)} aria-describedby={fieldErrors.password ? 'auth-password-error' : undefined} />
+                                        <button type="button" className="password-toggle" onClick={() => setShowPassword((visible) => !visible)} aria-label={showPassword ? 'Hide password' : 'Show password'}>{showPassword ? 'Hide' : 'Show'}</button>
+                                    </div>
+                                    {fieldErrors.password && <p id="auth-password-error" className="field-error">{fieldErrors.password}</p>}
+                                </div>
+                                {authError && <p className="form-error" role="alert">{authError}</p>}
+                                <button className="primary-action auth-submit" disabled={authSubmitting}>
+                                    {authSubmitting ? <><span className="spinner" aria-hidden="true" />{authMode === 'signIn' ? 'Signing in…' : 'Creating account…'}</> : authMode === 'signIn' ? 'Sign in' : 'Create account'}
+                                </button>
+                                {authMode === 'signIn' && <button type="button" className="text-button forgot-password" disabled>Forgot password?</button>}
+                            </form>
+                        </>
                     )}
-
-                    <button
-                        onClick={() => {
-                            setAuthMode(
-                                authMode === 'signIn'
-                                    ? 'signUp'
-                                    : 'signIn',
-                            )
-
-                            setAuthError(null)
-                            setAuthMessage(null)
-                        }}
-                        disabled={authSubmitting}
-                    >
-                        {authMode === 'signIn'
-                            ? 'Create an account'
-                            : 'Already have an account? Sign in'}
-                    </button>
                 </section>
             </main>
         )

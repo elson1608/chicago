@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Confirm your Chicago email</title>
+  </head>
+  <body style="margin:0;padding:0;background:#0f172a;color:#f1f5f9;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;">
+    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="width:100%;background:#0f172a;">
+      <tr>
+        <td align="center" style="padding:32px 16px;">
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="width:100%;max-width:520px;background:#1e293b;border:1px solid #475569;border-radius:16px;">
+            <tr>
+              <td style="padding:36px 32px 18px;text-align:center;">
+                <div style="color:#f59e0b;font-size:28px;font-weight:800;letter-spacing:-0.5px;">Chicago</div>
+                <div style="margin-top:7px;color:#94a3b8;font-size:14px;">Three dice. One loser.</div>
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:16px 32px 36px;color:#f1f5f9;font-size:16px;line-height:1.55;">
+                <h1 style="margin:0 0 14px;color:#f8fafc;font-size:24px;line-height:1.25;text-align:center;">Confirm your email</h1>
+                <p style="margin:0 0 24px;text-align:center;">You're almost ready to play. Confirm your email address to finish creating your Chicago account.</p>
+                <table role="presentation" cellspacing="0" cellpadding="0" border="0" align="center" style="margin:0 auto 26px;">
+                  <tr>
+                    <td bgcolor="#f59e0b" style="border-radius:10px;">
+                      <a href="{{ .ConfirmationURL }}" style="display:inline-block;padding:13px 22px;color:#0f172a;font-size:16px;font-weight:700;line-height:1;text-decoration:none;">Confirm email address</a>
+                    </td>
+                  </tr>
+                </table>
+                <p style="margin:0;color:#cbd5e1;font-size:14px;text-align:center;">If you didn't create this account, you can safely ignore this email.</p>
+                <p style="margin:24px 0 0;color:#94a3b8;font-size:12px;line-height:1.45;word-break:break-all;">If the button doesn't work, copy and paste this link into your browser:<br><a href="{{ .ConfirmationURL }}" style="color:#fbbf24;">{{ .ConfirmationURL }}</a></p>
+              </td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+    </table>
+  </body>
+</html>

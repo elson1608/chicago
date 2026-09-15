@@ -54,6 +54,10 @@ export async function signUpWithPassword(
     } = await supabase.auth.signUp({
         email,
         password,
+        options: {
+            // Keep this relative to the deployed app rather than a development URL.
+            emailRedirectTo: `${window.location.origin}/?auth=callback`,
+        },
     })
 
     if (error) {
@@ -61,4 +65,41 @@ export async function signUpWithPassword(
     }
 
     return data.session
+}
+
+export async function resendConfirmationEmail(email: string) {
+    const {error} = await supabase.auth.resend({
+        type: 'signup',
+        email,
+        options: {
+            emailRedirectTo: `${window.location.origin}/?auth=callback`,
+        },
+    })
+
+    if (error) {
+        throw error
+    }
+}
+
+/**
+ * Supabase's current client is configured for implicit flow, but accepting a
+ * code here also makes the callback safe if the project is switched to PKCE in
+ * the dashboard/client configuration later.
+ */
+export async function completeAuthCallback(): Promise<Session | null> {
+    const url = new URL(window.location.href)
+    const code = url.searchParams.get('code')
+
+    if (code) {
+        const {data, error} =
+            await supabase.auth.exchangeCodeForSession(code)
+
+        if (error) {
+            throw error
+        }
+
+        return data.session
+    }
+
+    return getCurrentSession()
 }

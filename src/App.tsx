@@ -163,6 +163,14 @@ type GameRoomProps = {
 const ROOM_CODE_CHARACTERS =
     'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
 
+const FINAL_ROLL_AUTO_END_DELAY_MS = 5
+
+const ZERO_SCORE_LOSS_NAMES: Record<number, string> = {
+    1: 'Loch',
+    2: 'Futterluke',
+    3: 'Muschlettn',
+}
+
 function createRoomCode() {
     return Array.from(
         {length: 6},
@@ -195,14 +203,22 @@ function GameRoom({
         useState<Record<number, boolean>>({})
     const [optimisticRollNumber, setOptimisticRollNumber] =
         useState<number | null>(null)
-    const [showTurnSignal, setShowTurnSignal] =
-        useState(false)
-    const turnSignalTimeout =
-        useRef<number | null>(null)
+    const [turnChangeId, setTurnChangeId] = useState(0)
+    const [roundLossNotice, setRoundLossNotice] = useState<{
+        loserId: string
+        score: number
+        rolls: number
+    } | null>(null)
+    const roundLossNoticeTimeout = useRef<number | null>(null)
+    const [turnResultNotice, setTurnResultNotice] = useState<{
+        playerId: string
+        score: number
+        nextPlayerId: string
+    } | null>(null)
+    const turnResultNoticeTimeout = useRef<number | null>(null)
     const hasIdentifiedConnection = useRef(false)
     const previousTurn = useRef<{
         activePlayerId: string | null
-        rolls: number | null
     } | null>(null)
     const socket = usePartySocket({
         party: 'game',
@@ -251,43 +267,20 @@ function GameRoom({
                     const nextActivePlayerId =
                         message.state.activePlayerId
 
-                    const nextRolls =
-                        message.state.round?.turn.rolls ?? null
-
                     const previous =
                         previousTurn.current
 
-                    const becameMyTurn =
-                        nextActivePlayerId === playerId &&
-                        (
-                            previous === null ||
-                            previous.activePlayerId !== playerId ||
-                            (
-                                previous.rolls !== null &&
-                                previous.rolls > 0 &&
-                                nextRolls === 0
-                            )
-                        )
-
-                    if (becameMyTurn) {
-                        setShowTurnSignal(true)
-
-                        if (turnSignalTimeout.current !== null) {
-                            window.clearTimeout(
-                                turnSignalTimeout.current,
-                            )
-                        }
-
-                        turnSignalTimeout.current =
-                            window.setTimeout(() => {
-                                setShowTurnSignal(false)
-                                turnSignalTimeout.current = null
-                            }, 2600)
+                    // A new cue is created only when the active seat changes.
+                    // Roll, score, and connection updates leave this untouched.
+                    if (
+                        previous !== null &&
+                        previous.activePlayerId !== nextActivePlayerId
+                    ) {
+                        setTurnChangeId((current) => current + 1)
                     }
 
                     previousTurn.current = {
                         activePlayerId: nextActivePlayerId,
-                        rolls: nextRolls,
                     }
 
                     setOptimisticHeld((current) => {
@@ -361,6 +354,40 @@ function GameRoom({
                         setChicagoAnimation('idle')
                     }, 1200)
 
+                    break
+
+                case 'ROUND_RESULT':
+                    setRoundLossNotice({
+                        loserId: message.loserId,
+                        score: message.score,
+                        rolls: message.rolls,
+                    })
+
+                    if (roundLossNoticeTimeout.current !== null) {
+                        window.clearTimeout(roundLossNoticeTimeout.current)
+                    }
+
+                    roundLossNoticeTimeout.current = window.setTimeout(() => {
+                        setRoundLossNotice(null)
+                        roundLossNoticeTimeout.current = null
+                    }, 3_200)
+                    break
+
+                case 'TURN_RESULT':
+                    setTurnResultNotice({
+                        playerId: message.playerId,
+                        score: message.score,
+                        nextPlayerId: message.nextPlayerId,
+                    })
+
+                    if (turnResultNoticeTimeout.current !== null) {
+                        window.clearTimeout(turnResultNoticeTimeout.current)
+                    }
+
+                    turnResultNoticeTimeout.current = window.setTimeout(() => {
+                        setTurnResultNotice(null)
+                        turnResultNoticeTimeout.current = null
+                    }, 1_800)
                     break
 
                 case 'ERROR':
@@ -535,6 +562,28 @@ function GameRoom({
         displayedRollNumber === 0 &&
         optimisticRollNumber === null
 
+    const hasReachedFinalRoll = Boolean(
+        isMyTurn &&
+        turn &&
+        round &&
+        optimisticRollNumber === null &&
+        turn.rolls === round.maxRolls,
+    )
+
+    useEffect(() => {
+        if (!hasReachedFinalRoll) {
+            return
+        }
+
+        const timeout = window.setTimeout(() => {
+            send({type: 'END_TURN'})
+        }, FINAL_ROLL_AUTO_END_DELAY_MS)
+
+        return () => {
+            window.clearTimeout(timeout)
+        }
+    }, [hasReachedFinalRoll, send])
+
     const displayedPlayers =
         gameState
             ? Object.values(gameState.players)
@@ -550,11 +599,61 @@ function GameRoom({
         !gameState.roomCreated &&
         !isCreatingRoom
 
+    const roundLoserName = roundLossNotice
+        ? gameState?.players[roundLossNotice.loserId]?.name ?? 'Player'
+        : null
+    const zeroScoreLossName =
+        roundLossNotice?.score === 0
+            ? ZERO_SCORE_LOSS_NAMES[roundLossNotice.rolls] ?? null
+            : null
+    const roundLossSubject = roundLossNotice?.loserId === playerId
+        ? 'You'
+        : roundLoserName
+    const turnResultPlayerName = turnResultNotice
+        ? gameState?.players[turnResultNotice.playerId]?.name ?? 'Player'
+        : null
+    const nextDicingPlayerName = turnResultNotice
+        ? gameState?.players[turnResultNotice.nextPlayerId]?.name ?? 'Player'
+        : null
+
     return (
-        <main className="app">
-            {showTurnSignal && (
-                <div className="turn-signal" role="status" aria-live="assertive">
-                    <strong>Your turn<span>Roll the dice when you’re ready</span></strong>
+            <main className="app">
+            {turnResultNotice && !roundLossNotice && (
+                <div
+                    className="turn-result-notice"
+                    role="status"
+                    aria-live="polite"
+                >
+                    <div>
+                        <span className="label">Turn complete</span>
+                        <strong>
+                            {turnResultNotice.playerId === playerId
+                                ? `You scored ${turnResultNotice.score}`
+                                : `${turnResultPlayerName} scored ${turnResultNotice.score}`}
+                        </strong>
+                        <p>{nextDicingPlayerName} is now dicing</p>
+                    </div>
+                </div>
+            )}
+            {roundLossNotice && (
+                <div
+                    className="round-result-notice"
+                    role="status"
+                    aria-live="assertive"
+                >
+                    <div>
+                        <span className="label">Round result</span>
+                        <strong>
+                            {zeroScoreLossName
+                                ? `${roundLossSubject} lost with 0 (${zeroScoreLossName})`
+                                : `${roundLossSubject} lost the round`}
+                        </strong>
+                        {!zeroScoreLossName && (
+                            <p>
+                                Lost with <b>{roundLossNotice.score}</b>
+                            </p>
+                        )}
+                    </div>
                 </div>
             )}
             {fireworkBurst > 0 && (
@@ -635,9 +734,19 @@ function GameRoom({
                         </div>
 
                         <ul className="player-list">
-                            {displayedPlayers.map((player) => (
-                                <li
-                                    key={player.id}
+                            {displayedPlayers.map((player) => {
+                                const playerRoundScore =
+                                    player.id === gameState.activePlayerId
+                                        ? currentScore
+                                        : round?.scores[player.id] ?? null
+
+                                return (
+                                    <li
+                                    key={`${player.id}-${
+                                        player.id === gameState.activePlayerId
+                                            ? turnChangeId
+                                            : 'inactive'
+                                    }`}
                                     aria-current={
                                         player.id === gameState.activePlayerId
                                             ? 'true'
@@ -646,6 +755,10 @@ function GameRoom({
                                     className={[
                                         player.id === gameState.activePlayerId
                                             ? 'active-player'
+                                            : '',
+                                        player.id === gameState.activePlayerId &&
+                                        turnChangeId > 0
+                                            ? 'turn-arrival'
                                             : '',
                                         player.id === nextPlayerId
                                             ? 'next-player'
@@ -659,6 +772,12 @@ function GameRoom({
                                 >
                                     <div>
                                         <strong>{player.name}</strong>
+
+                                        {round && (
+                                            <span className="player-score">
+                                                Score <b>{playerRoundScore ?? '—'}</b>
+                                            </span>
+                                        )}
 
                                         {player.id === playerId && (
                                             <span className="player-tag">You</span>
@@ -698,7 +817,8 @@ function GameRoom({
                     )}
                   </span>
                                 </li>
-                            ))}
+                                )
+                            })}
                         </ul>
                     </section>
 
@@ -729,7 +849,12 @@ function GameRoom({
                         gameState.phase === 'playing' &&
                         round &&
                         turn && (
-                            <section className="panel game-board">
+                            <section
+                                key={`board-${gameState.activePlayerId}-${turnChangeId}`}
+                                className={`panel game-board ${
+                                    isMyTurn ? 'my-turn' : 'watching-turn'
+                                } ${turnChangeId > 0 ? 'turn-arrival' : ''}`}
+                            >
                                 <div className="turn-heading">
                                     <div>
                                         <h2>
@@ -745,11 +870,21 @@ function GameRoom({
                                     </div>
                                 </div>
 
-                                <div className={`dice-stage ${needsFirstRoll ? 'awaiting-roll' : ''}`}>
+                                <div
+                                    className={`dice-stage ${
+                                        needsFirstRoll ? 'awaiting-roll' : ''
+                                    }`}
+                                >
                                     <div className="dice-row">
                                         {turn.roll.dice.map((die, dieIndex) => (
                                             <div
-                                                className="die-wrapper"
+                                                className={`die-wrapper ${
+                                                    isMyTurn &&
+                                                    needsFirstRoll &&
+                                                    turnChangeId > 0
+                                                        ? 'turn-entry-die'
+                                                        : ''
+                                                }`}
                                                 key={`${displayedRollNumber}-${dieIndex}`}
                                             >
                                                 <Die
@@ -792,12 +927,29 @@ function GameRoom({
                                     </div>
 
                                     {needsFirstRoll && (
-                                        <button
-                                            className="primary-action roll-prompt"
-                                            onClick={rollDice}
-                                        >
-                                            Roll Dice
-                                        </button>
+                                        <>
+                                            <p
+                                                className={`score-to-beat ${
+                                                    round.lowestScore === null
+                                                        ? 'no-score-to-beat'
+                                                        : ''
+                                                }`}
+                                            >
+                                                {round.lowestScore === null
+                                                    ? 'Set the score to beat'
+                                                    : `Nedded: ${round.lowestScore} in ${rollsRemaining}`}
+                                            </p>
+                                            <button
+                                                className={`primary-action roll-prompt ${
+                                                    turnChangeId > 0
+                                                        ? 'turn-cta'
+                                                        : ''
+                                                }`}
+                                                onClick={rollDice}
+                                            >
+                                                Roll Dice
+                                            </button>
+                                        </>
                                     )}
                                 </div>
 
@@ -812,31 +964,30 @@ function GameRoom({
                                     </strong>
                                 </div>
 
-                                <div className="game-controls">
-                                    <button
-                                        className="primary-action"
-                                        onClick={rollDice}
-                                        disabled={
-                                            !isMyTurn ||
-                                            turn.rolls >= round.maxRolls ||
-                                            optimisticRollNumber !== null ||
-                                            needsFirstRoll
-                                        }
-                                    >
-                                        Roll Dice
-                                    </button>
+                                {isMyTurn && !needsFirstRoll && (
+                                    <div className="game-controls">
+                                        <button
+                                            className="primary-action roll-dice-button"
+                                            onClick={rollDice}
+                                            disabled={
+                                                turn.rolls >= round.maxRolls ||
+                                                optimisticRollNumber !== null
+                                            }
+                                        >
+                                            Roll Dice
+                                        </button>
 
-                                    <button
-                                        onClick={endTurn}
-                                        disabled={
-                                            !isMyTurn ||
-                                            turn.rolls === 0 ||
-                                            optimisticRollNumber !== null
-                                        }
-                                    >
-                                        End Turn
-                                    </button>
-                                </div>
+                                        <button
+                                            onClick={endTurn}
+                                            disabled={
+                                                turn.rolls === 0 ||
+                                                optimisticRollNumber !== null
+                                            }
+                                        >
+                                            End Turn
+                                        </button>
+                                    </div>
+                                )}
 
                                 <div className="round-info">
                   <span>

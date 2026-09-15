@@ -123,6 +123,11 @@ export class GameServer extends Server<Env> {
 
         try {
             let gameEvents: GameEvent[] = []
+            let turnResult: {
+                playerId: string
+                score: number
+                nextPlayerId: string
+            } | null = null
             switch (result.data.type) {
                 case 'CREATE_ROOM':
                     this.handleCreateRoom()
@@ -165,6 +170,27 @@ export class GameServer extends Server<Env> {
 
                 case 'END_TURN':
                     gameEvents = this.handleEndTurn(connection)
+
+                    if (gameEvents.length === 0) {
+                        const completedPlayerId =
+                            this.requirePlayerId(connection)
+                        const score = this.gameState.round?.scores[
+                            completedPlayerId
+                        ]
+                        const nextPlayerId = this.gameState.activePlayerId
+
+                        if (
+                            score !== undefined &&
+                            nextPlayerId !== null
+                        ) {
+                            turnResult = {
+                                playerId: completedPlayerId,
+                                score,
+                                nextPlayerId,
+                            }
+                        }
+                    }
+
                     await this.checkActivePlayerConnection()
                     break
 
@@ -189,6 +215,41 @@ export class GameServer extends Server<Env> {
             }
 
             await this.commitState()
+
+            if (turnResult) {
+                const message: ServerMessage = {
+                    type: 'TURN_RESULT',
+                    ...turnResult,
+                }
+
+                this.broadcast(JSON.stringify(message))
+            }
+
+            const roundLoss = gameEvents.find(
+                (event) => event.type === 'ROUND_LOST',
+            )
+
+            if (roundLoss) {
+                const completedRound = gameEvents.find(
+                    (event): event is Extract<
+                        GameEvent,
+                        {type: 'ROUND_COMPLETED'}
+                    > =>
+                        event.type === 'ROUND_COMPLETED' &&
+                        event.playerId === roundLoss.playerId,
+                )
+
+                if (completedRound) {
+                    const message: ServerMessage = {
+                        type: 'ROUND_RESULT',
+                        loserId: roundLoss.playerId,
+                        score: completedRound.score,
+                        rolls: roundLoss.rolls,
+                    }
+
+                    this.broadcast(JSON.stringify(message))
+                }
+            }
 
             if (
                 gameEvents.some(

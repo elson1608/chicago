@@ -28,3 +28,15 @@ export type ServerMessage =
   | {
     type: 'CHICAGO'
   }
+  | {
+    type: 'ROUND_RESULT'
+    loserId: string
+    score: number
+    rolls: number
+  }
+  | {
+    type: 'TURN_RESULT'
+    playerId: string
+    score: number
+    nextPlayerId: string
+  }

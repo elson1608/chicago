@@ -580,6 +580,7 @@ function finishRound(
     events.push({
         type: 'ROUND_LOST',
         playerId: losingPlayer.id,
+        rolls: round.turn.rolls,
     })
 
     if (losingPlayer.lives === 1) {
@@ -713,4 +714,3 @@ export function endTurn(
 
     return []
 }
-

@@ -11,6 +11,7 @@ export type GameEvent =
     | {
     type: 'ROUND_LOST'
     playerId: string
+    rolls: number
 }
     | {
     type: 'CHICAGO'

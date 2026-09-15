@@ -259,11 +259,10 @@ function GameRoom({
 
                     const becameMyTurn =
                         nextActivePlayerId === playerId &&
-                        previous !== null &&
                         (
+                            previous === null ||
                             previous.activePlayerId !== playerId ||
                             (
-                                previous.activePlayerId === playerId &&
                                 previous.rolls !== null &&
                                 previous.rolls > 0 &&
                                 nextRolls === 0
@@ -283,7 +282,7 @@ function GameRoom({
                             window.setTimeout(() => {
                                 setShowTurnSignal(false)
                                 turnSignalTimeout.current = null
-                            }, 900)
+                            }, 2600)
                     }
 
                     previousTurn.current = {
@@ -526,6 +525,16 @@ function GameRoom({
             )
             : null
 
+    const rollsRemaining =
+        turn && round
+            ? round.maxRolls - displayedRollNumber
+            : 0
+
+    const needsFirstRoll =
+        isMyTurn &&
+        displayedRollNumber === 0 &&
+        optimisticRollNumber === null
+
     const displayedPlayers =
         gameState
             ? Object.values(gameState.players)
@@ -544,8 +553,8 @@ function GameRoom({
     return (
         <main className="app">
             {showTurnSignal && (
-                <div className="turn-signal">
-                    <strong>Your turn!</strong>
+                <div className="turn-signal" role="status" aria-live="assertive">
+                    <strong>Your turn<span>Roll the dice when you’re ready</span></strong>
                 </div>
             )}
             {fireworkBurst > 0 && (
@@ -629,6 +638,11 @@ function GameRoom({
                             {displayedPlayers.map((player) => (
                                 <li
                                     key={player.id}
+                                    aria-current={
+                                        player.id === gameState.activePlayerId
+                                            ? 'true'
+                                            : undefined
+                                    }
                                     className={[
                                         player.id === gameState.activePlayerId
                                             ? 'active-player'
@@ -651,6 +665,9 @@ function GameRoom({
                                         )}
                                         {player.id === nextPlayerId && (
                                             <span className="player-tag next">Next</span>
+                                        )}
+                                        {player.id === gameState.activePlayerId && (
+                                            <span className="player-tag acting">Acting</span>
                                         )}
                                         {player.id === gameState.hostPlayerId && (
                                             <span className="player-tag">Host</span>
@@ -720,63 +737,79 @@ function GameRoom({
                                                 ? 'Your turn'
                                                 : `${activePlayer?.name ?? 'Player'}'s turn`}
                                         </h2>
-
                                         <p>
-                                            Rolls: {turn.rolls} / {round.maxRolls}
+                                            {isMyTurn
+                                                ? 'Your move — roll the dice to begin.'
+                                                : 'Watch the table for the next move.'}
                                         </p>
-                                    </div>
-
-                                    <div className="score-box">
-                                        <span className="label">Score</span>
-                                        <strong>
-                                            {currentScore === null ? '—' : currentScore}
-                                        </strong>
                                     </div>
                                 </div>
 
-                                <div className="dice-row">
-                                    {turn.roll.dice.map((die, dieIndex) => (
-                                        <div
-                                            className="die-wrapper"
-                                            key={`${displayedRollNumber}-${dieIndex}`}
-                                        >
-                                            <Die
-                                                value={die.value}
-                                                held={
-                                                    optimisticHeld[dieIndex] ??
-                                                    die.held
-                                                }
-                                                rolling={displayedRollNumber > 0}
-                                                converting={
-                                                    optimisticRollNumber === null &&
-                                                    turn.roll.convertedDieIndices.includes(
-                                                        dieIndex,
-                                                    )
-                                                }
-                                                disabled={
-                                                    !isMyTurn ||
-                                                    turn.rolls === 0
-                                                }
-                                                onClick={() =>
-                                                    toggleDieHeld(dieIndex)
-                                                }
-                                            />
-                                            <span
-                                                className={`hold-label ${(optimisticHeld[dieIndex] ?? die.held)
-                                                    ? 'active'
-                                                    : ''
-                                                }`}
+                                <div className={`dice-stage ${needsFirstRoll ? 'awaiting-roll' : ''}`}>
+                                    <div className="dice-row">
+                                        {turn.roll.dice.map((die, dieIndex) => (
+                                            <div
+                                                className="die-wrapper"
+                                                key={`${displayedRollNumber}-${dieIndex}`}
                                             >
-                        {turn.rolls === 0
-                            ? ''
-                            : (optimisticHeld[dieIndex] ?? die.held)
-                                ? 'Held'
-                                : isMyTurn
-                                    ? 'Click to hold'
-                                    : ''}
-                      </span>
-                                        </div>
-                                    ))}
+                                                <Die
+                                                    value={die.value}
+                                                    held={
+                                                        optimisticHeld[dieIndex] ??
+                                                        die.held
+                                                    }
+                                                    rolling={displayedRollNumber > 0}
+                                                    converting={
+                                                        optimisticRollNumber === null &&
+                                                        turn.roll.convertedDieIndices.includes(
+                                                            dieIndex,
+                                                        )
+                                                    }
+                                                    disabled={
+                                                        !isMyTurn ||
+                                                        turn.rolls === 0
+                                                    }
+                                                    onClick={() =>
+                                                        toggleDieHeld(dieIndex)
+                                                    }
+                                                />
+                                                <span
+                                                    className={`hold-label ${(optimisticHeld[dieIndex] ?? die.held)
+                                                        ? 'active'
+                                                        : ''
+                                                    }`}
+                                                >
+                            {turn.rolls === 0
+                                ? ''
+                                : (optimisticHeld[dieIndex] ?? die.held)
+                                    ? 'Held'
+                                    : isMyTurn
+                                        ? 'Click to hold'
+                                        : ''}
+                          </span>
+                                            </div>
+                                        ))}
+                                    </div>
+
+                                    {needsFirstRoll && (
+                                        <button
+                                            className="primary-action roll-prompt"
+                                            onClick={rollDice}
+                                        >
+                                            Roll Dice
+                                        </button>
+                                    )}
+                                </div>
+
+                                <p className="rolls-remaining" aria-live="polite">
+                                    {rollsRemaining} {rollsRemaining === 1 ? 'roll' : 'rolls'} remaining
+                                </p>
+
+                                <div className="score-box">
+                                    <span className="label">Current score</span>
+                                    <strong>
+                                        {currentScore === null ? '—' : currentScore}
+                                    </strong>
                                 </div>
 
                                 <div className="game-controls">
@@ -786,7 +819,8 @@ function GameRoom({
                                         disabled={
                                             !isMyTurn ||
                                             turn.rolls >= round.maxRolls ||
-                                            optimisticRollNumber !== null
+                                            optimisticRollNumber !== null ||
+                                            needsFirstRoll
                                         }
                                     >
                                         Roll Dice

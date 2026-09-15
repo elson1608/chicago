@@ -9,6 +9,8 @@ import {supabase} from './supabase'
 import type {Session} from '@supabase/supabase-js'
 import {
     getCurrentSession,
+    completeAuthCallback,
+    resendConfirmationEmail,
     signInWithPassword,
     signOut,
     signUpWithPassword,
@@ -25,6 +27,49 @@ import type {
 
 import {PlayerStats} from './components/PlayerStats'
 import './App.css'
+
+type AuthMode = 'signIn' | 'signUp'
+type FieldErrors = {email?: string; password?: string}
+
+function friendlyAuthError(error: unknown, mode?: AuthMode) {
+    const message = error instanceof Error ? error.message.toLowerCase() : ''
+
+    if (message.includes('invalid login credentials')) {
+        return 'Email or password is incorrect.'
+    }
+    if (message.includes('email not confirmed')) {
+        return 'Confirm your email before signing in.'
+    }
+    if (message.includes('already registered') || message.includes('already been registered')) {
+        return 'An account already exists for this email. Try signing in instead.'
+    }
+    if (message.includes('rate limit') || message.includes('too many requests')) {
+        return 'Too many attempts. Please wait a moment and try again.'
+    }
+    if (message.includes('password')) {
+        return mode === 'signUp'
+            ? 'This password does not meet this project\'s password requirements.'
+            : 'Check your password and try again.'
+    }
+    if (message.includes('network') || message.includes('fetch')) {
+        return 'Could not reach Chicago. Check your connection and try again.'
+    }
+
+    return 'Something went wrong. Please try again.'
+}
+
+function validateAuth(email: string, password: string): FieldErrors {
+    const errors: FieldErrors = {}
+    if (!email) {
+        errors.email = 'Enter your email address.'
+    } else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+        errors.email = 'Enter a valid email address.'
+    }
+    if (!password) {
+        errors.password = 'Password is required.'
+    }
+    return errors
+}
 
 const DIE_PATTERNS: Record<number, number[]> = {
     1: [5],
@@ -163,6 +208,14 @@ type GameRoomProps = {
 const ROOM_CODE_CHARACTERS =
     'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
 
+const FINAL_ROLL_AUTO_END_DELAY_MS = 5
+
+const ZERO_SCORE_LOSS_NAMES: Record<number, string> = {
+    1: 'Loch',
+    2: 'Futterluke',
+    3: 'Muschlettn',
+}
+
 function createRoomCode() {
     return Array.from(
         {length: 6},
@@ -195,14 +248,22 @@ function GameRoom({
         useState<Record<number, boolean>>({})
     const [optimisticRollNumber, setOptimisticRollNumber] =
         useState<number | null>(null)
-    const [showTurnSignal, setShowTurnSignal] =
-        useState(false)
-    const turnSignalTimeout =
-        useRef<number | null>(null)
+    const [turnChangeId, setTurnChangeId] = useState(0)
+    const [roundLossNotice, setRoundLossNotice] = useState<{
+        loserId: string
+        score: number
+        rolls: number
+    } | null>(null)
+    const roundLossNoticeTimeout = useRef<number | null>(null)
+    const [turnResultNotice, setTurnResultNotice] = useState<{
+        playerId: string
+        score: number
+        nextPlayerId: string
+    } | null>(null)
+    const turnResultNoticeTimeout = useRef<number | null>(null)
     const hasIdentifiedConnection = useRef(false)
     const previousTurn = useRef<{
         activePlayerId: string | null
-        rolls: number | null
     } | null>(null)
     const socket = usePartySocket({
         party: 'game',
@@ -251,44 +312,20 @@ function GameRoom({
                     const nextActivePlayerId =
                         message.state.activePlayerId
 
-                    const nextRolls =
-                        message.state.round?.turn.rolls ?? null
-
                     const previous =
                         previousTurn.current
 
-                    const becameMyTurn =
-                        nextActivePlayerId === playerId &&
+                    // A new cue is created only when the active seat changes.
+                    // Roll, score, and connection updates leave this untouched.
+                    if (
                         previous !== null &&
-                        (
-                            previous.activePlayerId !== playerId ||
-                            (
-                                previous.activePlayerId === playerId &&
-                                previous.rolls !== null &&
-                                previous.rolls > 0 &&
-                                nextRolls === 0
-                            )
-                        )
-
-                    if (becameMyTurn) {
-                        setShowTurnSignal(true)
-
-                        if (turnSignalTimeout.current !== null) {
-                            window.clearTimeout(
-                                turnSignalTimeout.current,
-                            )
-                        }
-
-                        turnSignalTimeout.current =
-                            window.setTimeout(() => {
-                                setShowTurnSignal(false)
-                                turnSignalTimeout.current = null
-                            }, 900)
+                        previous.activePlayerId !== nextActivePlayerId
+                    ) {
+                        setTurnChangeId((current) => current + 1)
                     }
 
                     previousTurn.current = {
                         activePlayerId: nextActivePlayerId,
-                        rolls: nextRolls,
                     }
 
                     setOptimisticHeld((current) => {
@@ -362,6 +399,40 @@ function GameRoom({
                         setChicagoAnimation('idle')
                     }, 1200)
 
+                    break
+
+                case 'ROUND_RESULT':
+                    setRoundLossNotice({
+                        loserId: message.loserId,
+                        score: message.score,
+                        rolls: message.rolls,
+                    })
+
+                    if (roundLossNoticeTimeout.current !== null) {
+                        window.clearTimeout(roundLossNoticeTimeout.current)
+                    }
+
+                    roundLossNoticeTimeout.current = window.setTimeout(() => {
+                        setRoundLossNotice(null)
+                        roundLossNoticeTimeout.current = null
+                    }, 3_200)
+                    break
+
+                case 'TURN_RESULT':
+                    setTurnResultNotice({
+                        playerId: message.playerId,
+                        score: message.score,
+                        nextPlayerId: message.nextPlayerId,
+                    })
+
+                    if (turnResultNoticeTimeout.current !== null) {
+                        window.clearTimeout(turnResultNoticeTimeout.current)
+                    }
+
+                    turnResultNoticeTimeout.current = window.setTimeout(() => {
+                        setTurnResultNotice(null)
+                        turnResultNoticeTimeout.current = null
+                    }, 1_800)
                     break
 
                 case 'ERROR':
@@ -526,6 +597,38 @@ function GameRoom({
             )
             : null
 
+    const rollsRemaining =
+        turn && round
+            ? round.maxRolls - displayedRollNumber
+            : 0
+
+    const needsFirstRoll =
+        isMyTurn &&
+        displayedRollNumber === 0 &&
+        optimisticRollNumber === null
+
+    const hasReachedFinalRoll = Boolean(
+        isMyTurn &&
+        turn &&
+        round &&
+        optimisticRollNumber === null &&
+        turn.rolls === round.maxRolls,
+    )
+
+    useEffect(() => {
+        if (!hasReachedFinalRoll) {
+            return
+        }
+
+        const timeout = window.setTimeout(() => {
+            send({type: 'END_TURN'})
+        }, FINAL_ROLL_AUTO_END_DELAY_MS)
+
+        return () => {
+            window.clearTimeout(timeout)
+        }
+    }, [hasReachedFinalRoll, send])
+
     const displayedPlayers =
         gameState
             ? Object.values(gameState.players)
@@ -541,11 +644,61 @@ function GameRoom({
         !gameState.roomCreated &&
         !isCreatingRoom
 
+    const roundLoserName = roundLossNotice
+        ? gameState?.players[roundLossNotice.loserId]?.name ?? 'Player'
+        : null
+    const zeroScoreLossName =
+        roundLossNotice?.score === 0
+            ? ZERO_SCORE_LOSS_NAMES[roundLossNotice.rolls] ?? null
+            : null
+    const roundLossSubject = roundLossNotice?.loserId === playerId
+        ? 'You'
+        : roundLoserName
+    const turnResultPlayerName = turnResultNotice
+        ? gameState?.players[turnResultNotice.playerId]?.name ?? 'Player'
+        : null
+    const nextDicingPlayerName = turnResultNotice
+        ? gameState?.players[turnResultNotice.nextPlayerId]?.name ?? 'Player'
+        : null
+
     return (
-        <main className="app">
-            {showTurnSignal && (
-                <div className="turn-signal">
-                    <strong>Your turn!</strong>
+            <main className="app">
+            {turnResultNotice && !roundLossNotice && (
+                <div
+                    className="turn-result-notice"
+                    role="status"
+                    aria-live="polite"
+                >
+                    <div>
+                        <span className="label">Turn complete</span>
+                        <strong>
+                            {turnResultNotice.playerId === playerId
+                                ? `You scored ${turnResultNotice.score}`
+                                : `${turnResultPlayerName} scored ${turnResultNotice.score}`}
+                        </strong>
+                        <p>{nextDicingPlayerName} is now dicing</p>
+                    </div>
+                </div>
+            )}
+            {roundLossNotice && (
+                <div
+                    className="round-result-notice"
+                    role="status"
+                    aria-live="assertive"
+                >
+                    <div>
+                        <span className="label">Round result</span>
+                        <strong>
+                            {zeroScoreLossName
+                                ? `${roundLossSubject} lost with 0 (${zeroScoreLossName})`
+                                : `${roundLossSubject} lost the round`}
+                        </strong>
+                        {!zeroScoreLossName && (
+                            <p>
+                                Lost with <b>{roundLossNotice.score}</b>
+                            </p>
+                        )}
+                    </div>
                 </div>
             )}
             {fireworkBurst > 0 && (
@@ -626,12 +779,31 @@ function GameRoom({
                         </div>
 
                         <ul className="player-list">
-                            {displayedPlayers.map((player) => (
-                                <li
-                                    key={player.id}
+                            {displayedPlayers.map((player) => {
+                                const playerRoundScore =
+                                    player.id === gameState.activePlayerId
+                                        ? currentScore
+                                        : round?.scores[player.id] ?? null
+
+                                return (
+                                    <li
+                                    key={`${player.id}-${
+                                        player.id === gameState.activePlayerId
+                                            ? turnChangeId
+                                            : 'inactive'
+                                    }`}
+                                    aria-current={
+                                        player.id === gameState.activePlayerId
+                                            ? 'true'
+                                            : undefined
+                                    }
                                     className={[
                                         player.id === gameState.activePlayerId
                                             ? 'active-player'
+                                            : '',
+                                        player.id === gameState.activePlayerId &&
+                                        turnChangeId > 0
+                                            ? 'turn-arrival'
                                             : '',
                                         player.id === nextPlayerId
                                             ? 'next-player'
@@ -646,11 +818,20 @@ function GameRoom({
                                     <div>
                                         <strong>{player.name}</strong>
 
+                                        {round && (
+                                            <span className="player-score">
+                                                Score <b>{playerRoundScore ?? '—'}</b>
+                                            </span>
+                                        )}
+
                                         {player.id === playerId && (
                                             <span className="player-tag">You</span>
                                         )}
                                         {player.id === nextPlayerId && (
                                             <span className="player-tag next">Next</span>
+                                        )}
+                                        {player.id === gameState.activePlayerId && (
+                                            <span className="player-tag acting">Acting</span>
                                         )}
                                         {player.id === gameState.hostPlayerId && (
                                             <span className="player-tag">Host</span>
@@ -681,7 +862,8 @@ function GameRoom({
                     )}
                   </span>
                                 </li>
-                            ))}
+                                )
+                            })}
                         </ul>
                     </section>
 
@@ -712,7 +894,12 @@ function GameRoom({
                         gameState.phase === 'playing' &&
                         round &&
                         turn && (
-                            <section className="panel game-board">
+                            <section
+                                key={`board-${gameState.activePlayerId}-${turnChangeId}`}
+                                className={`panel game-board ${
+                                    isMyTurn ? 'my-turn' : 'watching-turn'
+                                } ${turnChangeId > 0 ? 'turn-arrival' : ''}`}
+                            >
                                 <div className="turn-heading">
                                     <div>
                                         <h2>
@@ -720,89 +907,132 @@ function GameRoom({
                                                 ? 'Your turn'
                                                 : `${activePlayer?.name ?? 'Player'}'s turn`}
                                         </h2>
-
                                         <p>
-                                            Rolls: {turn.rolls} / {round.maxRolls}
+                                            {isMyTurn
+                                                ? 'Your move — roll the dice to begin.'
+                                                : 'Watch the table for the next move.'}
                                         </p>
                                     </div>
-
-                                    <div className="score-box">
-                                        <span className="label">Score</span>
-                                        <strong>
-                                            {currentScore === null ? '—' : currentScore}
-                                        </strong>
-                                    </div>
                                 </div>
 
-                                <div className="dice-row">
-                                    {turn.roll.dice.map((die, dieIndex) => (
-                                        <div
-                                            className="die-wrapper"
-                                            key={`${displayedRollNumber}-${dieIndex}`}
-                                        >
-                                            <Die
-                                                value={die.value}
-                                                held={
-                                                    optimisticHeld[dieIndex] ??
-                                                    die.held
-                                                }
-                                                rolling={displayedRollNumber > 0}
-                                                converting={
-                                                    optimisticRollNumber === null &&
-                                                    turn.roll.convertedDieIndices.includes(
-                                                        dieIndex,
-                                                    )
-                                                }
-                                                disabled={
-                                                    !isMyTurn ||
-                                                    turn.rolls === 0
-                                                }
-                                                onClick={() =>
-                                                    toggleDieHeld(dieIndex)
-                                                }
-                                            />
-                                            <span
-                                                className={`hold-label ${(optimisticHeld[dieIndex] ?? die.held)
-                                                    ? 'active'
-                                                    : ''
+                                <div
+                                    className={`dice-stage ${
+                                        needsFirstRoll ? 'awaiting-roll' : ''
+                                    }`}
+                                >
+                                    <div className="dice-row">
+                                        {turn.roll.dice.map((die, dieIndex) => (
+                                            <div
+                                                className={`die-wrapper ${
+                                                    isMyTurn &&
+                                                    needsFirstRoll &&
+                                                    turnChangeId > 0
+                                                        ? 'turn-entry-die'
+                                                        : ''
+                                                }`}
+                                                key={`${displayedRollNumber}-${dieIndex}`}
+                                            >
+                                                <Die
+                                                    value={die.value}
+                                                    held={
+                                                        optimisticHeld[dieIndex] ??
+                                                        die.held
+                                                    }
+                                                    rolling={displayedRollNumber > 0}
+                                                    converting={
+                                                        optimisticRollNumber === null &&
+                                                        turn.roll.convertedDieIndices.includes(
+                                                            dieIndex,
+                                                        )
+                                                    }
+                                                    disabled={
+                                                        !isMyTurn ||
+                                                        turn.rolls === 0
+                                                    }
+                                                    onClick={() =>
+                                                        toggleDieHeld(dieIndex)
+                                                    }
+                                                />
+                                                <span
+                                                    className={`hold-label ${(optimisticHeld[dieIndex] ?? die.held)
+                                                        ? 'active'
+                                                        : ''
+                                                    }`}
+                                                >
+                            {turn.rolls === 0
+                                ? ''
+                                : (optimisticHeld[dieIndex] ?? die.held)
+                                    ? 'Held'
+                                    : isMyTurn
+                                        ? 'Click to hold'
+                                        : ''}
+                          </span>
+                                            </div>
+                                        ))}
+                                    </div>
+
+                                    {needsFirstRoll && (
+                                        <>
+                                            <p
+                                                className={`score-to-beat ${
+                                                    round.lowestScore === null
+                                                        ? 'no-score-to-beat'
+                                                        : ''
                                                 }`}
                                             >
-                        {turn.rolls === 0
-                            ? ''
-                            : (optimisticHeld[dieIndex] ?? die.held)
-                                ? 'Held'
-                                : isMyTurn
-                                    ? 'Click to hold'
-                                    : ''}
-                      </span>
-                                        </div>
-                                    ))}
+                                                {round.lowestScore === null
+                                                    ? 'Set the score to beat'
+                                                    : `Nedded: ${round.lowestScore} in ${rollsRemaining}`}
+                                            </p>
+                                            <button
+                                                className={`primary-action roll-prompt ${
+                                                    turnChangeId > 0
+                                                        ? 'turn-cta'
+                                                        : ''
+                                                }`}
+                                                onClick={rollDice}
+                                            >
+                                                Roll Dice
+                                            </button>
+                                        </>
+                                    )}
                                 </div>
 
-                                <div className="game-controls">
-                                    <button
-                                        className="primary-action"
-                                        onClick={rollDice}
-                                        disabled={
-                                            !isMyTurn ||
-                                            turn.rolls >= round.maxRolls ||
-                                            optimisticRollNumber !== null
-                                        }
-                                    >
-                                        Roll Dice
-                                    </button>
+                                <p className="rolls-remaining" aria-live="polite">
+                                    {rollsRemaining} {rollsRemaining === 1 ? 'roll' : 'rolls'} remaining
+                                </p>
 
-                                    <button
-                                        onClick={endTurn}
-                                        disabled={
-                                            !isMyTurn ||
-                                            turn.rolls === 0 ||
-                                            optimisticRollNumber !== null
-                                        }
-                                    >
-                                        End Turn
-                                    </button>
+                                <div className="score-box">
+                                    <span className="label">Current score</span>
+                                    <strong>
+                                        {currentScore === null ? '—' : currentScore}
+                                    </strong>
                                 </div>
+
+                                {isMyTurn && !needsFirstRoll && (
+                                    <div className="game-controls">
+                                        <button
+                                            className="primary-action roll-dice-button"
+                                            onClick={rollDice}
+                                            disabled={
+                                                turn.rolls >= round.maxRolls ||
+                                                optimisticRollNumber !== null
+                                            }
+                                        >
+                                            Roll Dice
+                                        </button>
+
+                                        <button
+                                            onClick={endTurn}
+                                            disabled={
+                                                turn.rolls === 0 ||
+                                                optimisticRollNumber !== null
+                                            }
+                                        >
+                                            End Turn
+                                        </button>
+                                    </div>
+                                )}
 
                                 <div className="round-info">
                   <span>
@@ -868,17 +1098,35 @@ function App() {
     const [authLoaded, setAuthLoaded] =
         useState(false)
     const [authMode, setAuthMode] =
-        useState<'signIn' | 'signUp'>('signIn')
+        useState<AuthMode>('signIn')
     const [emailInput, setEmailInput] =
         useState('')
     const [passwordInput, setPasswordInput] =
         useState('')
+    const emailInputRef = useRef<HTMLInputElement>(null)
+    const passwordInputRef = useRef<HTMLInputElement>(null)
     const [authSubmitting, setAuthSubmitting] =
         useState(false)
-    const [authMessage, setAuthMessage] =
-        useState<string | null>(null)
     const [authError, setAuthError] =
         useState<string | null>(null)
+    const [fieldErrors, setFieldErrors] =
+        useState<FieldErrors>({})
+    const [showPassword, setShowPassword] = useState(false)
+    const [confirmationEmail, setConfirmationEmail] =
+        useState<string | null>(() => sessionStorage.getItem('chicago.confirmationEmail'))
+    const [isResendingConfirmation, setIsResendingConfirmation] =
+        useState(false)
+    const [resendMessage, setResendMessage] =
+        useState<string | null>(null)
+    const [resendCooldown, setResendCooldown] = useState(0)
+    const [isAuthCallback] = useState(
+        () => new URLSearchParams(window.location.search).get('auth') === 'callback',
+    )
+    const [callbackState, setCallbackState] = useState<
+        'idle' | 'confirming' | 'success' | 'error'
+    >(() => isAuthCallback
+        ? 'confirming'
+        : 'idle')
     const [profileLoaded, setProfileLoaded] =
         useState(false)
     const [profileError, setProfileError] =
@@ -903,17 +1151,25 @@ function App() {
         const email =
             emailInput.trim()
 
-        if (
-            !email ||
-            !passwordInput ||
-            authSubmitting
-        ) {
+        if (authSubmitting) {
+            return
+        }
+
+        const errors = validateAuth(email, passwordInput)
+        setFieldErrors(errors)
+        if (Object.keys(errors).length > 0) {
+            window.setTimeout(() => {
+                if (errors.email) {
+                    emailInputRef.current?.focus()
+                } else {
+                    passwordInputRef.current?.focus()
+                }
+            }, 0)
             return
         }
 
         setAuthSubmitting(true)
         setAuthError(null)
-        setAuthMessage(null)
 
         try {
             if (authMode === 'signIn') {
@@ -934,21 +1190,32 @@ function App() {
                 if (session) {
                     setAuthSession(session)
                 } else {
-                    setAuthMessage(
-                        'Check your email to confirm your account.',
-                    )
+                    sessionStorage.setItem('chicago.confirmationEmail', email)
+                    setConfirmationEmail(email)
                 }
             }
         } catch (error: unknown) {
-            if (error instanceof Error) {
-                setAuthError(error.message)
-            } else {
-                setAuthError(
-                    'Authentication failed.',
-                )
-            }
+            setAuthError(friendlyAuthError(error, authMode))
         } finally {
             setAuthSubmitting(false)
+        }
+    }
+
+    async function resendConfirmation() {
+        if (!confirmationEmail || isResendingConfirmation || resendCooldown > 0) {
+            return
+        }
+
+        setIsResendingConfirmation(true)
+        setResendMessage(null)
+        try {
+            await resendConfirmationEmail(confirmationEmail)
+            setResendMessage('Confirmation email sent. Check your inbox.')
+            setResendCooldown(60)
+        } catch (error: unknown) {
+            setResendMessage(friendlyAuthError(error))
+        } finally {
+            setIsResendingConfirmation(false)
         }
     }
 
@@ -1049,6 +1316,18 @@ function App() {
     }
 
     useEffect(() => {
+        if (resendCooldown === 0) {
+            return
+        }
+
+        const timer = window.setTimeout(() => {
+            setResendCooldown((seconds) => Math.max(0, seconds - 1))
+        }, 1000)
+
+        return () => window.clearTimeout(timer)
+    }, [resendCooldown])
+
+    useEffect(() => {
         let cancelled = false
 
         const {
@@ -1062,34 +1341,49 @@ function App() {
             },
         )
 
-        getCurrentSession()
-            .then((session) => {
-                if (!cancelled) {
-                    setAuthSession(session)
-                    setAuthLoaded(true)
-                }
-            })
-            .catch((error: unknown) => {
+        const restoreSession = async () => {
+            try {
+                const session = isAuthCallback
+                    ? await completeAuthCallback()
+                    : await getCurrentSession()
+
                 if (cancelled) {
                     return
                 }
 
-                if (error instanceof Error) {
-                    setAuthError(error.message)
-                } else {
-                    setAuthError(
-                        'Authentication failed.',
-                    )
-                }
-
+                setAuthSession(session)
                 setAuthLoaded(true)
-            })
+
+                if (isAuthCallback) {
+                    if (!session) {
+                        throw new Error('No session was created.')
+                    }
+                    window.history.replaceState(null, '', window.location.pathname)
+                    sessionStorage.removeItem('chicago.confirmationEmail')
+                    setCallbackState('success')
+                    window.setTimeout(() => {
+                        if (!cancelled) setCallbackState('idle')
+                    }, 700)
+                }
+            } catch (error: unknown) {
+                if (cancelled) return
+                if (isAuthCallback) {
+                    setAuthError(friendlyAuthError(error))
+                    setCallbackState('error')
+                } else {
+                    setAuthError(friendlyAuthError(error))
+                }
+                setAuthLoaded(true)
+            }
+        }
+
+        restoreSession()
 
         return () => {
             cancelled = true
             subscription.unsubscribe()
         }
-    }, [])
+    }, [isAuthCallback])
 
     const authenticatedUserId =
         authSession?.user.id
@@ -1131,19 +1425,45 @@ function App() {
         }
     }, [authenticatedUserId])
 
-    if (authError) {
+    if (callbackState === 'confirming' || callbackState === 'success' || callbackState === 'error') {
         return (
-            <main className="app">
-                <p>
-                    Authentication failed: {authError}
-                </p>
+            <main className="app auth-page">
+                <header className="app-header">
+                    <a className="app-logo-link" href="/">
+                        <h1>Chicago</h1>
+                        <p>Three dice. One loser.</p>
+                    </a>
+                </header>
+                <section className="panel auth-card auth-status" aria-live="polite">
+                    <span className="auth-status-mark" aria-hidden="true">
+                        {callbackState === 'error' ? '!' : '✓'}
+                    </span>
+                    <h2>{callbackState === 'error' ? 'Confirmation failed' : callbackState === 'success' ? 'Email confirmed' : 'Confirming account…'}</h2>
+                    <p>{callbackState === 'error'
+                        ? 'This link may have expired or already been used.'
+                        : callbackState === 'success'
+                            ? 'Welcome to Chicago.'
+                            : 'Just a moment.'}</p>
+                    {callbackState === 'error' && (
+                        <>
+                            <p className="form-error">{authError}</p>
+                            <button className="primary-action" onClick={() => {
+                                setCallbackState('idle')
+                                window.history.replaceState(null, '', window.location.pathname)
+                            }}>Return to sign in</button>
+                            {confirmationEmail && <button className="text-button" onClick={resendConfirmation} disabled={isResendingConfirmation || resendCooldown > 0}>
+                                {isResendingConfirmation ? 'Sending…' : resendCooldown > 0 ? `Resend in ${resendCooldown}s` : 'Resend confirmation'}
+                            </button>}
+                        </>
+                    )}
+                </section>
             </main>
         )
     }
 
     if (!authLoaded) {
         return (
-            <main className="app">
+            <main className="app auth-page">
                 <p>Loading...</p>
             </main>
         )
@@ -1162,83 +1482,57 @@ function App() {
                     </a>
                 </header>
 
-                <section className="panel join-panel">
-                    <h2>
-                        {authMode === 'signIn'
-                            ? 'Sign in'
-                            : 'Create account'}
-                    </h2>
-
-                    <div className="join-controls">
-                        <input
-                            type="email"
-                            value={emailInput}
-                            onChange={(event) =>
-                                setEmailInput(
-                                    event.target.value,
-                                )
-                            }
-                            placeholder="Email"
-                            autoComplete="email"
-                            disabled={authSubmitting}
-                        />
-
-                        <input
-                            type="password"
-                            value={passwordInput}
-                            onChange={(event) =>
-                                setPasswordInput(
-                                    event.target.value,
-                                )
-                            }
-                            onKeyDown={(event) => {
-                                if (event.key === 'Enter') {
-                                    submitAuth()
-                                }
-                            }}
-                            placeholder="Password"
-                            autoComplete={
-                                authMode === 'signIn'
-                                    ? 'current-password'
-                                    : 'new-password'
-                            }
-                            disabled={authSubmitting}
-                        />
-
-                        <button
-                            className="primary-action"
-                            onClick={submitAuth}
-                            disabled={authSubmitting}
-                        >
-                            {authSubmitting
-                                ? 'Please wait...'
-                                : authMode === 'signIn'
-                                    ? 'Sign in'
-                                    : 'Create account'}
-                        </button>
-                    </div>
-
-                    {authMessage && (
-                        <p>{authMessage}</p>
+                <section className="panel auth-card">
+                    {confirmationEmail ? (
+                        <div className="auth-status" aria-live="polite">
+                            <span className="auth-status-mark" aria-hidden="true">✓</span>
+                            <h2>Check your inbox</h2>
+                            <p>We sent a confirmation link to:</p>
+                            <strong className="confirmation-email">{confirmationEmail}</strong>
+                            <p>Confirm your email address to finish creating your Chicago account.</p>
+                            <button className="primary-action" onClick={resendConfirmation} disabled={isResendingConfirmation || resendCooldown > 0}>
+                                {isResendingConfirmation ? 'Sending…' : resendCooldown > 0 ? `Resend in ${resendCooldown}s` : 'Resend email'}
+                            </button>
+                            {resendMessage && <p className="auth-feedback" role="status">{resendMessage}</p>}
+                            <button className="text-button" onClick={() => {
+                                setConfirmationEmail(null)
+                                setPasswordInput('')
+                                setResendMessage(null)
+                            }}>Use another email</button>
+                        </div>
+                    ) : (
+                        <>
+                            <div className="auth-tabs" role="tablist" aria-label="Authentication options">
+                                {(['signIn', 'signUp'] as const).map((mode) => (
+                                    <button key={mode} type="button" role="tab" aria-selected={authMode === mode} className={authMode === mode ? 'active' : ''} disabled={authSubmitting} onClick={() => {
+                                        setAuthMode(mode)
+                                        setAuthError(null)
+                                        setFieldErrors({})
+                                    }}>{mode === 'signIn' ? 'Sign in' : 'Create account'}</button>
+                                ))}
+                            </div>
+                            <form className="auth-form" noValidate onSubmit={(event) => { event.preventDefault(); submitAuth() }}>
+                                <div className="auth-field">
+                                    <label htmlFor="auth-email">Email</label>
+                                    <input ref={emailInputRef} id="auth-email" type="email" inputMode="email" value={emailInput} onChange={(event) => { setEmailInput(event.target.value); setFieldErrors((errors) => ({...errors, email: undefined})) }} placeholder="you@example.com" autoComplete="email" disabled={authSubmitting} aria-invalid={Boolean(fieldErrors.email)} aria-describedby={fieldErrors.email ? 'auth-email-error' : undefined} />
+                                    {fieldErrors.email && <p id="auth-email-error" className="field-error">{fieldErrors.email}</p>}
+                                </div>
+                                <div className="auth-field">
+                                    <label htmlFor="auth-password">Password</label>
+                                    <div className="password-input-wrap">
+                                        <input ref={passwordInputRef} id="auth-password" type={showPassword ? 'text' : 'password'} value={passwordInput} onChange={(event) => { setPasswordInput(event.target.value); setFieldErrors((errors) => ({...errors, password: undefined})) }} placeholder="••••••••" autoComplete={authMode === 'signIn' ? 'current-password' : 'new-password'} disabled={authSubmitting} aria-invalid={Boolean(fieldErrors.password)} aria-describedby={fieldErrors.password ? 'auth-password-error' : undefined} />
+                                        <button type="button" className="password-toggle" onClick={() => setShowPassword((visible) => !visible)} aria-label={showPassword ? 'Hide password' : 'Show password'}>{showPassword ? 'Hide' : 'Show'}</button>
+                                    </div>
+                                    {fieldErrors.password && <p id="auth-password-error" className="field-error">{fieldErrors.password}</p>}
+                                </div>
+                                {authError && <p className="form-error" role="alert">{authError}</p>}
+                                <button className="primary-action auth-submit" disabled={authSubmitting}>
+                                    {authSubmitting ? <><span className="spinner" aria-hidden="true" />{authMode === 'signIn' ? 'Signing in…' : 'Creating account…'}</> : authMode === 'signIn' ? 'Sign in' : 'Create account'}
+                                </button>
+                                {authMode === 'signIn' && <button type="button" className="text-button forgot-password" disabled>Forgot password?</button>}
+                            </form>
+                        </>
                     )}
-
-                    <button
-                        onClick={() => {
-                            setAuthMode(
-                                authMode === 'signIn'
-                                    ? 'signUp'
-                                    : 'signIn',
-                            )
-
-                            setAuthError(null)
-                            setAuthMessage(null)
-                        }}
-                        disabled={authSubmitting}
-                    >
-                        {authMode === 'signIn'
-                            ? 'Create an account'
-                            : 'Already have an account? Sign in'}
-                    </button>
                 </section>
             </main>
         )

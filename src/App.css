@@ -915,7 +915,7 @@ button:disabled {
   justify-content: center;
   padding: 20px;
   background: rgba(15, 23, 42, 0.56);
-  pointer-events: none;
+  pointer-events: auto;
   animation: round-result-arrival 360ms ease-out both;
 }
 
@@ -928,7 +928,7 @@ button:disabled {
   justify-content: center;
   padding: 20px;
   background: rgba(15, 23, 42, 0.42);
-  pointer-events: none;
+  pointer-events: auto;
   animation: round-result-arrival 260ms ease-out both;
 }
 

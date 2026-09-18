@@ -29,7 +29,7 @@ import {PlayerStats} from './components/PlayerStats'
 import './App.css'
 
 type AuthMode = 'signIn' | 'signUp'
-type FieldErrors = {email?: string; password?: string}
+type FieldErrors = { email?: string; password?: string }
 
 function friendlyAuthError(error: unknown, mode?: AuthMode) {
     const message = error instanceof Error ? error.message.toLowerCase() : ''
@@ -210,7 +210,7 @@ const ROOM_CODE_CHARACTERS =
 
 const FINAL_ROLL_AUTO_END_DELAY_MS = 5
 
-const ZERO_SCORE_LOSS_NAMES: Record<number, string> = {
+const ZERO_SCORE_NAMES: Record<number, string> = {
     1: 'Loch',
     2: 'Futterluke',
     3: 'Muschlettn',
@@ -252,15 +252,19 @@ function GameRoom({
     const [roundLossNotice, setRoundLossNotice] = useState<{
         loserId: string
         score: number
-        rolls: number
     } | null>(null)
     const roundLossNoticeTimeout = useRef<number | null>(null)
     const [turnResultNotice, setTurnResultNotice] = useState<{
         playerId: string
         score: number
-        nextPlayerId: string
+        rolls: number
+        nextPlayerId: string | null
     } | null>(null)
+    const interactionLocked =
+        turnResultNotice !== null ||
+        roundLossNotice !== null
     const turnResultNoticeTimeout = useRef<number | null>(null)
+    const delayedRoundResultTimeout = useRef<number | null>(null)
     const hasIdentifiedConnection = useRef(false)
     const previousTurn = useRef<{
         activePlayerId: string | null
@@ -401,27 +405,47 @@ function GameRoom({
 
                     break
 
-                case 'ROUND_RESULT':
-                    setRoundLossNotice({
-                        loserId: message.loserId,
-                        score: message.score,
-                        rolls: message.rolls,
-                    })
-
-                    if (roundLossNoticeTimeout.current !== null) {
-                        window.clearTimeout(roundLossNoticeTimeout.current)
+                case 'ROUND_RESULT': {
+                    if (
+                        delayedRoundResultTimeout.current !== null
+                    ) {
+                        window.clearTimeout(
+                            delayedRoundResultTimeout.current,
+                        )
                     }
 
-                    roundLossNoticeTimeout.current = window.setTimeout(() => {
-                        setRoundLossNotice(null)
-                        roundLossNoticeTimeout.current = null
-                    }, 3_200)
+                    delayedRoundResultTimeout.current =
+                        window.setTimeout(() => {
+                            setRoundLossNotice({
+                                loserId: message.loserId,
+                                score: message.score,
+                            })
+
+                            if (
+                                roundLossNoticeTimeout.current !== null
+                            ) {
+                                window.clearTimeout(
+                                    roundLossNoticeTimeout.current,
+                                )
+                            }
+
+                            roundLossNoticeTimeout.current =
+                                window.setTimeout(() => {
+                                    setRoundLossNotice(null)
+                                    roundLossNoticeTimeout.current = null
+                                }, 3_200)
+
+                            delayedRoundResultTimeout.current = null
+                        }, 1_800)
+
                     break
+                }
 
                 case 'TURN_RESULT':
                     setTurnResultNotice({
                         playerId: message.playerId,
                         score: message.score,
+                        rolls: message.rolls,
                         nextPlayerId: message.nextPlayerId,
                     })
 
@@ -519,6 +543,7 @@ function GameRoom({
 
     function rollDice() {
         if (
+            interactionLocked ||
             !turn ||
             !isMyTurn ||
             optimisticRollNumber !== null
@@ -536,7 +561,10 @@ function GameRoom({
     }
 
     function toggleDieHeld(dieIndex: number) {
-        if (!turn) {
+        if (
+            interactionLocked ||
+            !turn
+        ) {
             return
         }
 
@@ -558,6 +586,10 @@ function GameRoom({
     }
 
     function endTurn() {
+        if (interactionLocked) {
+            return
+        }
+
         send({
             type: 'END_TURN',
         })
@@ -647,9 +679,9 @@ function GameRoom({
     const roundLoserName = roundLossNotice
         ? gameState?.players[roundLossNotice.loserId]?.name ?? 'Player'
         : null
-    const zeroScoreLossName =
-        roundLossNotice?.score === 0
-            ? ZERO_SCORE_LOSS_NAMES[roundLossNotice.rolls] ?? null
+    const zeroScoreTurnName =
+        turnResultNotice?.score === 0
+            ? ZERO_SCORE_NAMES[turnResultNotice.rolls] ?? null
             : null
     const roundLossSubject = roundLossNotice?.loserId === playerId
         ? 'You'
@@ -657,26 +689,49 @@ function GameRoom({
     const turnResultPlayerName = turnResultNotice
         ? gameState?.players[turnResultNotice.playerId]?.name ?? 'Player'
         : null
-    const nextDicingPlayerName = turnResultNotice
-        ? gameState?.players[turnResultNotice.nextPlayerId]?.name ?? 'Player'
-        : null
+    const nextDicingPlayerName =
+        turnResultNotice?.nextPlayerId
+            ? gameState?.players[
+            turnResultNotice.nextPlayerId
+            ]?.name ?? 'Player'
+            : null
 
     return (
-            <main className="app">
+        <main className="app">
             {turnResultNotice && !roundLossNotice && (
                 <div
-                    className="turn-result-notice"
+                    className={
+                        zeroScoreTurnName
+                            ? 'round-result-notice'
+                            : 'turn-result-notice'
+                    }
                     role="status"
-                    aria-live="polite"
+                    aria-live={
+                        zeroScoreTurnName
+                            ? 'assertive'
+                            : 'polite'
+                    }
                 >
                     <div>
-                        <span className="label">Turn complete</span>
+            <span className="label">
+                Turn result
+            </span>
+
                         <strong>
-                            {turnResultNotice.playerId === playerId
-                                ? `You scored ${turnResultNotice.score}`
-                                : `${turnResultPlayerName} scored ${turnResultNotice.score}`}
+                            {zeroScoreTurnName
+                                ? turnResultNotice.playerId === playerId
+                                    ? `You rolled a ${zeroScoreTurnName}`
+                                    : `${turnResultPlayerName} rolled a ${zeroScoreTurnName}`
+                                : turnResultNotice.playerId === playerId
+                                    ? `You scored ${turnResultNotice.score}`
+                                    : `${turnResultPlayerName} scored ${turnResultNotice.score}`}
                         </strong>
-                        <p>{nextDicingPlayerName} is now dicing</p>
+
+                        {nextDicingPlayerName && (
+                            <p>
+                                {nextDicingPlayerName} is now dicing
+                            </p>
+                        )}
                     </div>
                 </div>
             )}
@@ -687,17 +742,17 @@ function GameRoom({
                     aria-live="assertive"
                 >
                     <div>
-                        <span className="label">Round result</span>
+            <span className="label">
+                Round result
+            </span>
+
                         <strong>
-                            {zeroScoreLossName
-                                ? `${roundLossSubject} lost with 0 (${zeroScoreLossName})`
-                                : `${roundLossSubject} lost the round`}
+                            {roundLossSubject} lost the round
                         </strong>
-                        {!zeroScoreLossName && (
-                            <p>
-                                Lost with <b>{roundLossNotice.score}</b>
-                            </p>
-                        )}
+
+                        <p>
+                            Lost with <b>{roundLossNotice.score}</b>
+                        </p>
                     </div>
                 </div>
             )}
@@ -787,64 +842,64 @@ function GameRoom({
 
                                 return (
                                     <li
-                                    key={`${player.id}-${
-                                        player.id === gameState.activePlayerId
-                                            ? turnChangeId
-                                            : 'inactive'
-                                    }`}
-                                    aria-current={
-                                        player.id === gameState.activePlayerId
-                                            ? 'true'
-                                            : undefined
-                                    }
-                                    className={[
-                                        player.id === gameState.activePlayerId
-                                            ? 'active-player'
-                                            : '',
-                                        player.id === gameState.activePlayerId &&
-                                        turnChangeId > 0
-                                            ? 'turn-arrival'
-                                            : '',
-                                        player.id === nextPlayerId
-                                            ? 'next-player'
-                                            : '',
-                                        !player.connected
-                                            ? 'disconnected-player'
-                                            : '',
-                                    ]
-                                        .filter(Boolean)
-                                        .join(' ')}
-                                >
-                                    <div>
-                                        <strong>{player.name}</strong>
+                                        key={`${player.id}-${
+                                            player.id === gameState.activePlayerId
+                                                ? turnChangeId
+                                                : 'inactive'
+                                        }`}
+                                        aria-current={
+                                            player.id === gameState.activePlayerId
+                                                ? 'true'
+                                                : undefined
+                                        }
+                                        className={[
+                                            player.id === gameState.activePlayerId
+                                                ? 'active-player'
+                                                : '',
+                                            player.id === gameState.activePlayerId &&
+                                            turnChangeId > 0
+                                                ? 'turn-arrival'
+                                                : '',
+                                            player.id === nextPlayerId
+                                                ? 'next-player'
+                                                : '',
+                                            !player.connected
+                                                ? 'disconnected-player'
+                                                : '',
+                                        ]
+                                            .filter(Boolean)
+                                            .join(' ')}
+                                    >
+                                        <div>
+                                            <strong>{player.name}</strong>
 
-                                        {round && (
-                                            <span className="player-score">
+                                            {round && (
+                                                <span className="player-score">
                                                 Score <b>{playerRoundScore ?? '—'}</b>
                                             </span>
-                                        )}
+                                            )}
 
-                                        {player.id === playerId && (
-                                            <span className="player-tag">You</span>
-                                        )}
-                                        {player.id === nextPlayerId && (
-                                            <span className="player-tag next">Next</span>
-                                        )}
-                                        {player.id === gameState.activePlayerId && (
-                                            <span className="player-tag acting">Acting</span>
-                                        )}
-                                        {player.id === gameState.hostPlayerId && (
-                                            <span className="player-tag">Host</span>
-                                        )}
+                                            {player.id === playerId && (
+                                                <span className="player-tag">You</span>
+                                            )}
+                                            {player.id === nextPlayerId && (
+                                                <span className="player-tag next">Next</span>
+                                            )}
+                                            {player.id === gameState.activePlayerId && (
+                                                <span className="player-tag acting">Acting</span>
+                                            )}
+                                            {player.id === gameState.hostPlayerId && (
+                                                <span className="player-tag">Host</span>
+                                            )}
 
-                                        {!player.connected && (
-                                            <span className="player-tag warning">
+                                            {!player.connected && (
+                                                <span className="player-tag warning">
                         Disconnected
                       </span>
-                                        )}
-                                    </div>
+                                            )}
+                                        </div>
 
-                                    <span className="lives">
+                                        <span className="lives">
                     {player.id === gameState.extraLifePlayerId && player.lives === 1 ? (
                         <span className="heart half-heart">♥</span>
                     ) : (
@@ -861,7 +916,7 @@ function GameRoom({
                         )
                     )}
                   </span>
-                                </li>
+                                    </li>
                                 )
                             })}
                         </ul>
@@ -982,7 +1037,7 @@ function GameRoom({
                                             >
                                                 {round.lowestScore === null
                                                     ? 'Set the score to beat'
-                                                    : `Nedded: ${round.lowestScore} in ${rollsRemaining}`}
+                                                    : `Needed: ${round.lowestScore} in ${rollsRemaining}`}
                                             </p>
                                             <button
                                                 className={`primary-action roll-prompt ${
@@ -991,6 +1046,7 @@ function GameRoom({
                                                         : ''
                                                 }`}
                                                 onClick={rollDice}
+                                                disabled={interactionLocked}
                                             >
                                                 Roll Dice
                                             </button>
@@ -1015,6 +1071,7 @@ function GameRoom({
                                             className="primary-action roll-dice-button"
                                             onClick={rollDice}
                                             disabled={
+                                                interactionLocked ||
                                                 turn.rolls >= round.maxRolls ||
                                                 optimisticRollNumber !== null
                                             }
@@ -1025,6 +1082,7 @@ function GameRoom({
                                         <button
                                             onClick={endTurn}
                                             disabled={
+                                                interactionLocked ||
                                                 turn.rolls === 0 ||
                                                 optimisticRollNumber !== null
                                             }
@@ -1071,6 +1129,7 @@ function GameRoom({
                                     <button
                                         className="primary-action"
                                         onClick={startGame}
+                                        disabled={interactionLocked}
                                     >
                                         Play again
                                     </button>
@@ -1450,8 +1509,10 @@ function App() {
                             <button className="primary-action" onClick={() => {
                                 setCallbackState('idle')
                                 window.history.replaceState(null, '', window.location.pathname)
-                            }}>Return to sign in</button>
-                            {confirmationEmail && <button className="text-button" onClick={resendConfirmation} disabled={isResendingConfirmation || resendCooldown > 0}>
+                            }}>Return to sign in
+                            </button>
+                            {confirmationEmail && <button className="text-button" onClick={resendConfirmation}
+                                                          disabled={isResendingConfirmation || resendCooldown > 0}>
                                 {isResendingConfirmation ? 'Sending…' : resendCooldown > 0 ? `Resend in ${resendCooldown}s` : 'Resend confirmation'}
                             </button>}
                         </>
@@ -1490,7 +1551,8 @@ function App() {
                             <p>We sent a confirmation link to:</p>
                             <strong className="confirmation-email">{confirmationEmail}</strong>
                             <p>Confirm your email address to finish creating your Chicago account.</p>
-                            <button className="primary-action" onClick={resendConfirmation} disabled={isResendingConfirmation || resendCooldown > 0}>
+                            <button className="primary-action" onClick={resendConfirmation}
+                                    disabled={isResendingConfirmation || resendCooldown > 0}>
                                 {isResendingConfirmation ? 'Sending…' : resendCooldown > 0 ? `Resend in ${resendCooldown}s` : 'Resend email'}
                             </button>
                             {resendMessage && <p className="auth-feedback" role="status">{resendMessage}</p>}
@@ -1498,38 +1560,65 @@ function App() {
                                 setConfirmationEmail(null)
                                 setPasswordInput('')
                                 setResendMessage(null)
-                            }}>Use another email</button>
+                            }}>Use another email
+                            </button>
                         </div>
                     ) : (
                         <>
                             <div className="auth-tabs" role="tablist" aria-label="Authentication options">
                                 {(['signIn', 'signUp'] as const).map((mode) => (
-                                    <button key={mode} type="button" role="tab" aria-selected={authMode === mode} className={authMode === mode ? 'active' : ''} disabled={authSubmitting} onClick={() => {
-                                        setAuthMode(mode)
-                                        setAuthError(null)
-                                        setFieldErrors({})
-                                    }}>{mode === 'signIn' ? 'Sign in' : 'Create account'}</button>
+                                    <button key={mode} type="button" role="tab" aria-selected={authMode === mode}
+                                            className={authMode === mode ? 'active' : ''} disabled={authSubmitting}
+                                            onClick={() => {
+                                                setAuthMode(mode)
+                                                setAuthError(null)
+                                                setFieldErrors({})
+                                            }}>{mode === 'signIn' ? 'Sign in' : 'Create account'}</button>
                                 ))}
                             </div>
-                            <form className="auth-form" noValidate onSubmit={(event) => { event.preventDefault(); submitAuth() }}>
+                            <form className="auth-form" noValidate onSubmit={(event) => {
+                                event.preventDefault();
+                                submitAuth()
+                            }}>
                                 <div className="auth-field">
                                     <label htmlFor="auth-email">Email</label>
-                                    <input ref={emailInputRef} id="auth-email" type="email" inputMode="email" value={emailInput} onChange={(event) => { setEmailInput(event.target.value); setFieldErrors((errors) => ({...errors, email: undefined})) }} placeholder="you@example.com" autoComplete="email" disabled={authSubmitting} aria-invalid={Boolean(fieldErrors.email)} aria-describedby={fieldErrors.email ? 'auth-email-error' : undefined} />
-                                    {fieldErrors.email && <p id="auth-email-error" className="field-error">{fieldErrors.email}</p>}
+                                    <input ref={emailInputRef} id="auth-email" type="email" inputMode="email"
+                                           value={emailInput} onChange={(event) => {
+                                        setEmailInput(event.target.value);
+                                        setFieldErrors((errors) => ({...errors, email: undefined}))
+                                    }} placeholder="you@example.com" autoComplete="email" disabled={authSubmitting}
+                                           aria-invalid={Boolean(fieldErrors.email)}
+                                           aria-describedby={fieldErrors.email ? 'auth-email-error' : undefined}/>
+                                    {fieldErrors.email &&
+                                        <p id="auth-email-error" className="field-error">{fieldErrors.email}</p>}
                                 </div>
                                 <div className="auth-field">
                                     <label htmlFor="auth-password">Password</label>
                                     <div className="password-input-wrap">
-                                        <input ref={passwordInputRef} id="auth-password" type={showPassword ? 'text' : 'password'} value={passwordInput} onChange={(event) => { setPasswordInput(event.target.value); setFieldErrors((errors) => ({...errors, password: undefined})) }} placeholder="••••••••" autoComplete={authMode === 'signIn' ? 'current-password' : 'new-password'} disabled={authSubmitting} aria-invalid={Boolean(fieldErrors.password)} aria-describedby={fieldErrors.password ? 'auth-password-error' : undefined} />
-                                        <button type="button" className="password-toggle" onClick={() => setShowPassword((visible) => !visible)} aria-label={showPassword ? 'Hide password' : 'Show password'}>{showPassword ? 'Hide' : 'Show'}</button>
+                                        <input ref={passwordInputRef} id="auth-password"
+                                               type={showPassword ? 'text' : 'password'} value={passwordInput}
+                                               onChange={(event) => {
+                                                   setPasswordInput(event.target.value);
+                                                   setFieldErrors((errors) => ({...errors, password: undefined}))
+                                               }} placeholder="••••••••"
+                                               autoComplete={authMode === 'signIn' ? 'current-password' : 'new-password'}
+                                               disabled={authSubmitting} aria-invalid={Boolean(fieldErrors.password)}
+                                               aria-describedby={fieldErrors.password ? 'auth-password-error' : undefined}/>
+                                        <button type="button" className="password-toggle"
+                                                onClick={() => setShowPassword((visible) => !visible)}
+                                                aria-label={showPassword ? 'Hide password' : 'Show password'}>{showPassword ? 'Hide' : 'Show'}</button>
                                     </div>
-                                    {fieldErrors.password && <p id="auth-password-error" className="field-error">{fieldErrors.password}</p>}
+                                    {fieldErrors.password &&
+                                        <p id="auth-password-error" className="field-error">{fieldErrors.password}</p>}
                                 </div>
                                 {authError && <p className="form-error" role="alert">{authError}</p>}
                                 <button className="primary-action auth-submit" disabled={authSubmitting}>
-                                    {authSubmitting ? <><span className="spinner" aria-hidden="true" />{authMode === 'signIn' ? 'Signing in…' : 'Creating account…'}</> : authMode === 'signIn' ? 'Sign in' : 'Create account'}
+                                    {authSubmitting ? <><span className="spinner"
+                                                              aria-hidden="true"/>{authMode === 'signIn' ? 'Signing in…' : 'Creating account…'}</> : authMode === 'signIn' ? 'Sign in' : 'Create account'}
                                 </button>
-                                {authMode === 'signIn' && <button type="button" className="text-button forgot-password" disabled>Forgot password?</button>}
+                                {authMode === 'signIn' &&
+                                    <button type="button" className="text-button forgot-password" disabled>Forgot
+                                        password?</button>}
                             </form>
                         </>
                     )}

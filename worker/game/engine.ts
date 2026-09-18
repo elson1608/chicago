@@ -577,12 +577,18 @@ function finishRound(
                 score,
             }))
 
+    const losingScore =
+        round.scores[losingPlayer.id]
+
+    if (losingScore === undefined) {
+        throw new Error('NO_LOSING_SCORE')
+    }
+
     events.push({
         type: 'ROUND_LOST',
         playerId: losingPlayer.id,
-        rolls: round.turn.rolls,
+        score: losingScore,
     })
-
     if (losingPlayer.lives === 1) {
         if (gameState.extraLifePlayerId !== null) {
             events.push(
@@ -691,7 +697,11 @@ export function endTurn(
         throw new Error('NO_ROLL_PERFORMED')
     }
 
-    round.scores[playerId] = updateLowestScore(gameState)
+    const score = updateLowestScore(gameState)
+
+    const rolls = round.turn.rolls
+
+    round.scores[playerId] = score
 
     // First player of the round determines
     // maximum number of rolls
@@ -701,10 +711,22 @@ export function endTurn(
     }
 
     if (isRoundFinished(round, activePlayer)) {
-        return finishRound(
-            gameState,
-            round,
-        )
+        const roundEvents =
+            finishRound(
+                gameState,
+                round,
+            )
+
+        return [
+            {
+                type: 'TURN_COMPLETED',
+                playerId,
+                score,
+                rolls,
+                nextPlayerId: null,
+            },
+            ...roundEvents,
+        ]
     }
 
     advanceTurn(
@@ -712,5 +734,14 @@ export function endTurn(
         activePlayer,
     )
 
-    return []
+    return [
+        {
+            type: 'TURN_COMPLETED',
+            playerId,
+            score,
+            rolls,
+            nextPlayerId:
+            gameState.activePlayerId,
+        },
+    ]
 }

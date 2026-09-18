@@ -11,7 +11,7 @@ export type GameEvent =
     | {
     type: 'ROUND_LOST'
     playerId: string
-    rolls: number
+    score: number
 }
     | {
     type: 'CHICAGO'
@@ -24,4 +24,11 @@ export type GameEvent =
     | {
     type: 'GAME_LOST'
     playerId: string
+}
+    | {
+    type: 'TURN_COMPLETED'
+    playerId: string
+    score: number
+    rolls: number
+    nextPlayerId: string | null
 }

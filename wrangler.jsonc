@@ -26,6 +26,12 @@
     ]
   },
 
+  "triggers": {
+    "crons": [
+      "0 */6 * * *"
+    ]
+  },
+
   "exports": {
     "GameServer": {
       "type": "durable-object",
